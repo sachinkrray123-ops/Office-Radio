@@ -1,0 +1,75 @@
+/* style.css */
+body {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* Enhanced Glassmorphism */
+.glass-panel {
+    background: rgba(17, 25, 40, 0.75);
+    backdrop-filter: blur(16px) saturate(180%);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.125);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+}
+
+.bg-glass-100 { background-color: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255,255,255,0.1); }
+.bg-glass-200 { background-color: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255,255,255,0.15); }
+.bg-glass-300 { background-color: rgba(255, 255, 255, 0.15); }
+
+/* Vibe active state */
+.vibe-btn.active {
+    background-color: rgba(52, 211, 153, 0.15);
+    border-color: rgba(52, 211, 153, 0.5);
+    box-shadow: 0 0 20px rgba(52, 211, 153, 0.2);
+}
+
+/* Spin animation for cover art when playing */
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.spin-slow {
+    animation: spin 8s linear infinite;
+}
+
+/* Office Animations */
+/* 1. Blinking Cursor */
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+}
+.cursor-blink {
+    animation: blink 1s step-end infinite;
+    display: inline-block;
+    width: 8px;
+    height: 14px;
+    background-color: #34d399; /* emerald-400 */
+    vertical-align: middle;
+    margin-left: 4px;
+}
+
+/* 2. Animated Particles (Dust Motes / Ambient Office Air) */
+.particle {
+    position: absolute;
+    background: rgba(255, 230, 180, 0.4); /* warm dust color */
+    border-radius: 50%;
+    pointer-events: none;
+    animation: float-up linear infinite;
+    filter: blur(1px);
+    box-shadow: 0 0 4px rgba(255, 230, 180, 0.6);
+}
+
+@keyframes float-up {
+    0% { transform: translateY(100vh) translateX(0) scale(0.5); opacity: 0; }
+    20% { opacity: 0.8; }
+    80% { opacity: 0.5; }
+    100% { transform: translateY(-10vh) translateX(50px) scale(1.5); opacity: 0; }
+}
+
+/* Hide scrollbar for a cleaner look */
+::-webkit-scrollbar {
+    width: 0px;
+    background: transparent;
+}
