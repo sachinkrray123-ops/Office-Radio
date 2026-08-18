@@ -13,6 +13,14 @@ let timeLeft = 25 * 60; // 25 minutes
 let isTimerRunning = false;
 let isWorkSession = true; // true = Work (25m), false = Break (5m)
 
+// Sync State
+let isGroupMode = false;
+let currentRoom = null;
+let mqttClient = null;
+let isLocalAction = false; // Flag to prevent infinite broadcast loops
+let syncBroadcastTimer = null;
+let activeHostId = Math.random().toString(36).substring(7);
+
 // --- DOM Elements ---
 const playBtn = document.getElementById('btn-play');
 const prevBtn = document.getElementById('btn-prev');
@@ -25,14 +33,32 @@ const timeNowEl = document.getElementById('time-now');
 const timeTotalEl = document.getElementById('time-total');
 const progressFill = document.getElementById('progress-fill');
 const progressContainer = document.getElementById('progress-container');
-const bgImage = document.getElementById('bg-image');
 
 const timerDisplay = document.getElementById('timer-display');
 const timerLabel = document.getElementById('timer-label');
 const btnTimerToggle = document.getElementById('btn-timer-toggle');
 const btnTimerReset = document.getElementById('btn-timer-reset');
 
-const vibeBtns = []; // Removed
+// Room UI Elements
+const btnToggleMode = document.getElementById('btn-toggle-mode');
+const roomStatusText = document.getElementById('room-status-text');
+const roomStatusIndicator = document.getElementById('room-status-indicator');
+const roomModal = document.getElementById('room-modal');
+const roomModalCard = document.getElementById('room-modal-card');
+const roomInput = document.getElementById('room-input');
+const btnJoinRoom = document.getElementById('btn-join-room');
+const btnCancelRoom = document.getElementById('btn-cancel-room');
+const btnLeaveRoom = document.getElementById('btn-leave-room');
+
+// --- Initialization ---
+function init() {
+    // Check URL for room
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlRoom = urlParams.get('room');
+    if (urlRoom) {
+        joinRoom(urlRoom);
+    }
+}
 
 // --- YouTube API ---
 function onYouTubeIframeAPIReady() {
@@ -59,13 +85,7 @@ function onYouTubeIframeAPIReady() {
 
 function onPlayerReady(event) {
     event.target.setVolume(100);
-    // Shuffle playlist logic
-    setTimeout(() => {
-        if(ytPlayer && ytPlayer.setShuffle) {
-            ytPlayer.setShuffle(true);
-        }
-    }, 1000);
-    
+    setTimeout(() => { if(ytPlayer && ytPlayer.setShuffle) ytPlayer.setShuffle(true); }, 1000);
     startMetadataPolling();
 }
 
@@ -92,31 +112,44 @@ function onPlayerError(e) {
 // --- Player Controls ---
 playBtn.addEventListener('click', () => {
     if (!ytPlayer) return;
+    isLocalAction = true;
     if (isPlaying) {
         ytPlayer.pauseVideo();
+        broadcastSync('PAUSE');
     } else {
         ytPlayer.playVideo();
+        broadcastSync('PLAY');
     }
+    setTimeout(() => isLocalAction = false, 500);
 });
 
 nextBtn.addEventListener('click', () => {
-    if (ytPlayer) ytPlayer.nextVideo();
+    isLocalAction = true;
+    nextTrack();
+    setTimeout(() => { broadcastSync('PLAY'); isLocalAction = false; }, 1000);
 });
 
 prevBtn.addEventListener('click', () => {
-    if (ytPlayer) ytPlayer.previousVideo();
+    if (ytPlayer) {
+        isLocalAction = true;
+        ytPlayer.previousVideo();
+        setTimeout(() => { broadcastSync('PLAY'); isLocalAction = false; }, 1000);
+    }
 });
 
 function nextTrack() {
     if (ytPlayer) ytPlayer.nextVideo();
 }
 
-// Progress Bar Click
 progressContainer.addEventListener('click', (e) => {
     if (!ytPlayer || !ytPlayer.getDuration) return;
+    isLocalAction = true;
     const rect = progressContainer.getBoundingClientRect();
     const pos = (e.clientX - rect.left) / rect.width;
-    ytPlayer.seekTo(pos * ytPlayer.getDuration());
+    const seekTime = pos * ytPlayer.getDuration();
+    ytPlayer.seekTo(seekTime);
+    broadcastSync('SEEK', { time: seekTime });
+    setTimeout(() => isLocalAction = false, 500);
 });
 
 // --- UI Updates ---
@@ -134,12 +167,8 @@ function updateTrackData() {
     if (!ytPlayer || typeof ytPlayer.getVideoData !== 'function') return;
     try {
         const data = ytPlayer.getVideoData();
-        if (data && data.title) {
-            trackNameEl.innerText = data.title;
-        }
-        if (data && data.video_id) {
-            coverArtEl.style.backgroundImage = `url('https://img.youtube.com/vi/${data.video_id}/hqdefault.jpg')`;
-        }
+        if (data && data.title) trackNameEl.innerText = data.title;
+        if (data && data.video_id) coverArtEl.style.backgroundImage = `url('https://img.youtube.com/vi/${data.video_id}/hqdefault.jpg')`;
     } catch(e) {}
 }
 
@@ -154,12 +183,9 @@ function startProgressMonitor() {
         if (ytPlayer && ytPlayer.getCurrentTime && ytPlayer.getDuration) {
             const cur = ytPlayer.getCurrentTime() || 0;
             const dur = ytPlayer.getDuration() || 0;
-            
             timeNowEl.innerText = formatTime(cur);
             timeTotalEl.innerText = formatTime(dur);
-            
-            const pct = dur > 0 ? (cur / dur) * 100 : 0;
-            progressFill.style.width = `${pct}%`;
+            progressFill.style.width = dur > 0 ? `${(cur / dur) * 100}%` : '0%';
         }
     }, 500);
 }
@@ -171,7 +197,142 @@ function formatTime(s) {
     return `${m}:${sec < 10 ? '0' : ''}${sec}`;
 }
 
-// --- Vibe Shifts (Removed) ---
+// --- Sync / MQTT Logic ---
+function openRoomModal() {
+    roomModal.classList.remove('hidden');
+    setTimeout(() => {
+        roomModal.classList.remove('opacity-0');
+        roomModalCard.classList.remove('scale-95');
+    }, 10);
+    roomInput.value = currentRoom || '';
+    if (isGroupMode) {
+        btnJoinRoom.innerText = "Switch Room";
+        btnLeaveRoom.classList.remove('hidden');
+    } else {
+        btnJoinRoom.innerText = "Join / Create";
+        btnLeaveRoom.classList.add('hidden');
+    }
+}
+
+function closeRoomModal() {
+    roomModal.classList.add('opacity-0');
+    roomModalCard.classList.add('scale-95');
+    setTimeout(() => {
+        roomModal.classList.add('hidden');
+    }, 300);
+}
+
+function joinRoom(roomName) {
+    if (!roomName) return;
+    currentRoom = roomName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+    isGroupMode = true;
+    
+    // Update URL without reloading
+    const newurl = window.location.protocol + "//" + window.location.host + window.location.pathname + '?room=' + currentRoom;
+    window.history.pushState({path:newurl},'',newurl);
+
+    // Update UI
+    roomStatusText.innerText = 'Room: ' + currentRoom;
+    roomStatusIndicator.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.8)]';
+    roomStatusText.classList.add('text-emerald-400');
+    btnToggleMode.classList.add('border-emerald-500/30');
+
+    // Connect to MQTT
+    if (mqttClient) mqttClient.end();
+    mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
+    
+    mqttClient.on('connect', () => {
+        console.log('Connected to MQTT room:', currentRoom);
+        mqttClient.subscribe(`office-radio/room/${currentRoom}`);
+    });
+
+    mqttClient.on('message', (topic, message) => {
+        if (isLocalAction) return; // Ignore incoming syncs if we just clicked something
+        try {
+            const data = JSON.parse(message.toString());
+            handleSyncMessage(data);
+        } catch(e) {}
+    });
+
+    // Start auto-broadcasting if we are playing
+    if (syncBroadcastTimer) clearInterval(syncBroadcastTimer);
+    syncBroadcastTimer = setInterval(() => {
+        if (isPlaying && !isLocalAction) broadcastSync('HEARTBEAT');
+    }, 3000);
+
+    closeRoomModal();
+}
+
+function leaveRoom() {
+    isGroupMode = false;
+    currentRoom = null;
+    if (mqttClient) mqttClient.end();
+    if (syncBroadcastTimer) clearInterval(syncBroadcastTimer);
+    
+    const newurl = window.location.protocol + "//" + window.location.host + window.location.pathname;
+    window.history.pushState({path:newurl},'',newurl);
+
+    roomStatusText.innerText = 'Solo Mode';
+    roomStatusIndicator.className = 'w-2 h-2 rounded-full bg-gray-400';
+    roomStatusText.classList.remove('text-emerald-400');
+    btnToggleMode.classList.remove('border-emerald-500/30');
+    
+    closeRoomModal();
+}
+
+function broadcastSync(action, extraData = {}) {
+    if (!isGroupMode || !mqttClient || !ytPlayer) return;
+    
+    let trackIndex = 0;
+    try { trackIndex = ytPlayer.getPlaylistIndex(); } catch(e){}
+    
+    let time = 0;
+    try { time = ytPlayer.getCurrentTime(); } catch(e){}
+
+    const payload = {
+        action: action,
+        trackIndex: trackIndex,
+        time: time,
+        hostId: activeHostId,
+        ...extraData
+    };
+    
+    mqttClient.publish(`office-radio/room/${currentRoom}`, JSON.stringify(payload));
+}
+
+function handleSyncMessage(data) {
+    if (!ytPlayer) return;
+    
+    const currentIndex = ytPlayer.getPlaylistIndex();
+    
+    if (data.action === 'PLAY' || data.action === 'HEARTBEAT') {
+        if (data.trackIndex !== currentIndex) {
+            ytPlayer.playVideoAt(data.trackIndex);
+        }
+        if (!isPlaying && data.action === 'PLAY') {
+            ytPlayer.playVideo();
+        }
+        
+        // Sync time if drift > 2 seconds
+        const currentTime = ytPlayer.getCurrentTime() || 0;
+        if (Math.abs(currentTime - data.time) > 2.5) {
+            ytPlayer.seekTo(data.time);
+        }
+    } 
+    else if (data.action === 'PAUSE') {
+        ytPlayer.pauseVideo();
+    }
+    else if (data.action === 'SEEK') {
+        ytPlayer.seekTo(data.time);
+    }
+}
+
+// Modal Listeners
+btnToggleMode.addEventListener('click', openRoomModal);
+btnCancelRoom.addEventListener('click', closeRoomModal);
+btnJoinRoom.addEventListener('click', () => joinRoom(roomInput.value));
+btnLeaveRoom.addEventListener('click', leaveRoom);
+roomInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') joinRoom(roomInput.value); });
 
 // --- Pomodoro Logic ---
 function updateTimerDisplay() {
@@ -188,17 +349,11 @@ function toggleTimer() {
     } else {
         isTimerRunning = true;
         btnTimerToggle.innerText = 'Pause Timer';
-        
-        // Auto-play music if focus starts
-        if(isWorkSession && !isPlaying && ytPlayer) {
-            ytPlayer.playVideo();
-        }
+        if(isWorkSession && !isPlaying && ytPlayer) ytPlayer.playVideo();
 
         timerInterval = setInterval(() => {
             timeLeft--;
-            if (timeLeft <= 0) {
-                switchSession();
-            }
+            if (timeLeft <= 0) switchSession();
             updateTimerDisplay();
         }, 1000);
     }
@@ -212,31 +367,21 @@ function resetTimer() {
     updateTimerDisplay();
     timerLabel.innerText = 'Deep Work';
     btnTimerToggle.innerText = 'Start Focus';
-    
-    // Switch to Focus Vibe automatically (Removed)
 }
 
 function switchSession() {
     clearInterval(timerInterval);
     isTimerRunning = false;
-    
     if (isWorkSession) {
-        // Switch to Break
         isWorkSession = false;
         timeLeft = 5 * 60;
         timerLabel.innerText = 'Take a Break';
         btnTimerToggle.innerText = 'Start Break';
-        
-        // Switch to Coffee Break Vibe (Removed)
-        
     } else {
-        // Switch to Work
         isWorkSession = true;
         timeLeft = 25 * 60;
         timerLabel.innerText = 'Deep Work';
         btnTimerToggle.innerText = 'Start Focus';
-        
-        // Switch to Focus Vibe (Removed)
     }
     updateTimerDisplay();
 }
@@ -244,8 +389,9 @@ function switchSession() {
 btnTimerToggle.addEventListener('click', toggleTimer);
 btnTimerReset.addEventListener('click', resetTimer);
 
-// Init display
+// Init
 updateTimerDisplay();
+init();
 
 // --- Ambient Animations ---
 const particlesContainer = document.getElementById('particles');
