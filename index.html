@@ -55,13 +55,9 @@
     <!-- Main UI Container (Glassmorphism) -->
     <main class="relative z-10 w-full max-w-md mx-4 p-6 sm:p-8 rounded-[2rem] glass-panel flex flex-col gap-6 transition-all duration-500">
         
-        <!-- Header / Status -->
-        <header class="flex items-center justify-between">
+        <!-- Header -->
+        <header class="flex items-center justify-center mb-2">
             <h1 class="text-xl font-bold tracking-tight text-white/90">Office Radio</h1>
-            <button id="btn-toggle-mode" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-glass-100 border border-glass-200 text-xs font-medium text-gray-300 hover:bg-glass-200 transition-colors active:scale-95">
-                <span id="room-status-indicator" class="w-2 h-2 rounded-full bg-gray-400"></span>
-                <span id="room-status-text">Solo Mode</span>
-            </button>
         </header>
 
         <!-- Pomodoro Timer -->
@@ -129,6 +125,21 @@
         </section>
 
         <!-- Removed Vibe Shifts as requested -->
+
+        <!-- Group Listening / Room -->
+        <section class="mt-2 pt-4 border-t border-white/10 flex items-center justify-between">
+            <div>
+                <p class="text-[10px] font-bold text-white/40 uppercase tracking-wider mb-1">Session Mode</p>
+                <div class="flex items-center gap-2">
+                    <span id="room-status-indicator" class="w-2 h-2 rounded-full bg-gray-400"></span>
+                    <span id="room-status-text" class="text-sm font-medium text-white/80">Solo Listening</span>
+                </div>
+            </div>
+            <button id="btn-toggle-mode" class="px-4 py-2 rounded-xl bg-glass-200 hover:bg-glass-300 border border-white/20 text-white text-xs font-bold transition-all active:scale-95 flex items-center gap-2 shadow-lg">
+                <svg class="w-4 h-4 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+                Join / Create Room
+            </button>
+        </section>
         
     </main>
 
