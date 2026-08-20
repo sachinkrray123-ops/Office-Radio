@@ -407,6 +407,10 @@ function handlePresenceMessage(data) {
         roomMembers.add(data.senderId);
         // Reply with our own presence so the new joiner knows we're here
         publishPresence('HERE');
+        // Immediately broadcast current playback state so the joiner syncs instantly
+        if (isPlaying) {
+            setTimeout(() => broadcastSync('SYNC_STATE'), 300);
+        }
         showToast('🟢 Someone joined the room');
     } else if (data.action === 'HERE') {
         roomMembers.add(data.senderId);
@@ -424,7 +428,7 @@ function updateListenerCount() {
 }
 
 // ========================================
-// SYNC LOGIC
+// SYNC LOGIC (Latency-Compensated)
 // ========================================
 function broadcastSync(action, extraData = {}) {
     if (!isGroupMode || !mqttClient || !ytPlayer) return;
@@ -449,7 +453,7 @@ function broadcastSync(action, extraData = {}) {
         time,
         title,
         senderId: myClientId,
-        timestamp: Date.now(),
+        sentAt: Date.now(),   // Used for latency compensation
         ...extraData
     };
     
@@ -459,40 +463,47 @@ function broadcastSync(action, extraData = {}) {
 function handleSyncMessage(data) {
     if (!ytPlayer || isLocalAction) return;
     
-    if (data.action === 'PLAY' || data.action === 'TRACK_CHANGE') {
-        // If different video, load it
+    // Calculate network latency and compensate
+    const latencyMs = Date.now() - (data.sentAt || Date.now());
+    const latencySec = Math.max(0, Math.min(latencyMs / 1000, 5)); // Cap at 5s to avoid crazy jumps
+    const compensatedTime = (data.time || 0) + latencySec;
+    
+    if (data.action === 'PLAY' || data.action === 'TRACK_CHANGE' || data.action === 'SYNC_STATE') {
         try {
             const currentVideoId = ytPlayer.getVideoData().video_id;
             if (data.videoId && data.videoId !== currentVideoId) {
-                ytPlayer.loadVideoById(data.videoId, data.time || 0);
-                showToast(`🎵 Now Playing: ${data.title || 'Unknown'}`);
-            } else if (!isPlaying) {
-                ytPlayer.playVideo();
+                // Different video — load it at the compensated time
+                ytPlayer.loadVideoById(data.videoId, compensatedTime);
+                if (data.action !== 'SYNC_STATE') showToast(`🎵 Now Playing: ${data.title || 'Unknown'}`);
+            } else {
+                // Same video — sync the time if drifted
+                const currentTime = ytPlayer.getCurrentTime() || 0;
+                if (Math.abs(currentTime - compensatedTime) > 0.8) {
+                    ytPlayer.seekTo(compensatedTime, true);
+                }
+                if (!isPlaying) ytPlayer.playVideo();
             }
         } catch (e) {
-            if (data.videoId) ytPlayer.loadVideoById(data.videoId, data.time || 0);
+            if (data.videoId) ytPlayer.loadVideoById(data.videoId, compensatedTime);
         }
     }
     else if (data.action === 'PAUSE') {
         ytPlayer.pauseVideo();
     }
     else if (data.action === 'SEEK') {
-        ytPlayer.seekTo(data.time);
+        ytPlayer.seekTo(compensatedTime, true);
     }
     else if (data.action === 'HEARTBEAT') {
-        // Sync time drift if > 3 seconds
         try {
             const currentVideoId = ytPlayer.getVideoData().video_id;
             if (data.videoId && data.videoId !== currentVideoId) {
-                ytPlayer.loadVideoById(data.videoId, data.time || 0);
+                ytPlayer.loadVideoById(data.videoId, compensatedTime);
             } else {
                 const currentTime = ytPlayer.getCurrentTime() || 0;
-                if (Math.abs(currentTime - data.time) > 3) {
-                    ytPlayer.seekTo(data.time);
+                if (Math.abs(currentTime - compensatedTime) > 0.8) {
+                    ytPlayer.seekTo(compensatedTime, true);
                 }
-                if (data.action === 'HEARTBEAT' && !isPlaying) {
-                    ytPlayer.playVideo();
-                }
+                if (!isPlaying) ytPlayer.playVideo();
             }
         } catch (e) { }
     }
@@ -532,11 +543,11 @@ function joinRoom(roomCode) {
         showToast(`✅ Connected to room ${currentRoom}`);
     });
     
-    // Start heartbeat broadcast (every 3 seconds while playing)
+    // Start heartbeat broadcast every 2 seconds for tighter sync
     if (syncBroadcastTimer) clearInterval(syncBroadcastTimer);
     syncBroadcastTimer = setInterval(() => {
         if (isPlaying && !isLocalAction) broadcastSync('HEARTBEAT');
-    }, 3000);
+    }, 2000);
     
     closeRoomModal();
 }
