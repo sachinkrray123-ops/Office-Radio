@@ -1,66 +1,109 @@
-// app.js
+// app.js — Office Radio V2
 
-// --- State ---
+// ========================================
+// CONFIG
+// ========================================
+const YT_API_KEY = 'AIzaSyB54Inb5_XtjHmd53pDMVZYTBiU-ys7MJs';
+const MQTT_BROKER = 'wss://broker.emqx.io:8084/mqtt';
+const MQTT_PREFIX = 'office-radio-v2';
+const DEFAULT_PLAYLIST = 'PLUSeOh5veVTo';
+
+// ========================================
+// STATE
+// ========================================
 let ytPlayer = null;
 let isPlaying = false;
-let currentPlaylist = 'PLUSeOh5veVTo'; // Custom Office Playlist
+let currentPlaylist = DEFAULT_PLAYLIST;
 let progressTimer = null;
 let metadataTimer = null;
 
-// Pomodoro State
+// Pomodoro
 let timerInterval = null;
-let timeLeft = 25 * 60; // 25 minutes
+let timeLeft = 25 * 60;
 let isTimerRunning = false;
-let isWorkSession = true; // true = Work (25m), false = Break (5m)
+let isWorkSession = true;
 
-// Sync State
+// Sync
 let isGroupMode = false;
 let currentRoom = null;
 let mqttClient = null;
-let isLocalAction = false; // Flag to prevent infinite broadcast loops
+let isLocalAction = false;
 let syncBroadcastTimer = null;
-let activeHostId = Math.random().toString(36).substring(7);
+const myClientId = 'or_' + Math.random().toString(36).substring(2, 10);
 
-// --- DOM Elements ---
-const playBtn = document.getElementById('btn-play');
-const prevBtn = document.getElementById('btn-prev');
-const nextBtn = document.getElementById('btn-next');
-const playIcon = document.getElementById('icon-play');
-const trackNameEl = document.getElementById('track-name');
-const playlistNameEl = document.getElementById('playlist-name');
-const coverArtEl = document.getElementById('cover-art');
-const timeNowEl = document.getElementById('time-now');
-const timeTotalEl = document.getElementById('time-total');
-const progressFill = document.getElementById('progress-fill');
-const progressContainer = document.getElementById('progress-container');
+// Visitor tracking
+let visitorHeartbeatTimer = null;
+let visitorMap = {};  // clientId -> lastSeen timestamp
 
-const timerDisplay = document.getElementById('timer-display');
-const timerLabel = document.getElementById('timer-label');
-const btnTimerToggle = document.getElementById('btn-timer-toggle');
-const btnTimerReset = document.getElementById('btn-timer-reset');
+// Mute
+let isMuted = false;
 
-// Room UI Elements
-const btnToggleMode = document.getElementById('btn-toggle-mode');
-const roomStatusText = document.getElementById('room-status-text');
-const roomStatusIndicator = document.getElementById('room-status-indicator');
-const roomModal = document.getElementById('room-modal');
-const roomModalCard = document.getElementById('room-modal-card');
-const roomInput = document.getElementById('room-input');
-const btnJoinRoom = document.getElementById('btn-join-room');
-const btnCancelRoom = document.getElementById('btn-cancel-room');
-const btnLeaveRoom = document.getElementById('btn-leave-room');
+// ========================================
+// DOM ELEMENTS
+// ========================================
+const $ = id => document.getElementById(id);
 
-// --- Initialization ---
+const playBtn = $('btn-play');
+const prevBtn = $('btn-prev');
+const nextBtn = $('btn-next');
+const playIcon = $('icon-play');
+const muteBtn = $('btn-mute');
+const iconMute = $('icon-mute');
+const trackNameEl = $('track-name');
+const playlistNameEl = $('playlist-name');
+const coverArtEl = $('cover-art');
+const timeNowEl = $('time-now');
+const timeTotalEl = $('time-total');
+const progressFill = $('progress-fill');
+const progressContainer = $('progress-container');
+
+const timerDisplay = $('timer-display');
+const timerLabel = $('timer-label');
+const btnTimerToggle = $('btn-timer-toggle');
+const btnTimerReset = $('btn-timer-reset');
+
+// Room UI
+const roomModal = $('room-modal');
+const roomModalCard = $('room-modal-card');
+const tabCreate = $('tab-create');
+const tabJoin = $('tab-join');
+const panelCreate = $('panel-create');
+const panelJoin = $('panel-join');
+const generatedCodeEl = $('generated-room-code');
+const btnCopyCode = $('btn-copy-code');
+const btnCreateGo = $('btn-create-go');
+const roomInput = $('room-input');
+const btnJoinGo = $('btn-join-go');
+const btnCancelModal = $('btn-cancel-modal');
+
+const roomConnectedBar = $('room-connected-bar');
+const connectedRoomCode = $('connected-room-code');
+const listenerCountEl = $('listener-count');
+const btnCloseRoom = $('btn-close-room');
+const roomButtons = $('room-buttons');
+const btnSolo = $('btn-solo');
+const btnGroup = $('btn-group');
+
+const visitorCountEl = $('visitor-count');
+const toastContainer = $('toast-container');
+
+// ========================================
+// INITIALIZATION
+// ========================================
 function init() {
-    // Check URL for room
+    startVisitorTracking();
+    
+    // Check URL for room auto-join
     const urlParams = new URLSearchParams(window.location.search);
     const urlRoom = urlParams.get('room');
     if (urlRoom) {
-        joinRoom(urlRoom);
+        joinRoom(urlRoom.toUpperCase());
     }
 }
 
-// --- YouTube API ---
+// ========================================
+// YOUTUBE API
+// ========================================
 function onYouTubeIframeAPIReady() {
     ytPlayer = new YT.Player('youtubeBridge', {
         height: '200',
@@ -73,7 +116,7 @@ function onYouTubeIframeAPIReady() {
             enablejsapi: 1,
             playsinline: 1,
             rel: 0,
-            index: Math.floor(Math.random() * 20) // Random start track
+            index: 0
         },
         events: {
             'onReady': onPlayerReady,
@@ -85,7 +128,6 @@ function onYouTubeIframeAPIReady() {
 
 function onPlayerReady(event) {
     event.target.setVolume(100);
-    setTimeout(() => { if(ytPlayer && ytPlayer.setShuffle) ytPlayer.setShuffle(true); }, 1000);
     startMetadataPolling();
 }
 
@@ -100,16 +142,18 @@ function onPlayerStateChange(event) {
         updatePlayIconUI(false);
         coverArtEl.classList.remove('spin-slow');
     } else if (event.data === YT.PlayerState.ENDED) {
-        nextTrack();
+        if (ytPlayer) ytPlayer.nextVideo();
     }
 }
 
 function onPlayerError(e) {
-    console.warn("YT Error, skipping");
-    nextTrack();
+    console.warn("YT Error code:", e.data, "— skipping track");
+    if (ytPlayer) ytPlayer.nextVideo();
 }
 
-// --- Player Controls ---
+// ========================================
+// PLAYER CONTROLS
+// ========================================
 playBtn.addEventListener('click', () => {
     if (!ytPlayer) return;
     isLocalAction = true;
@@ -118,28 +162,31 @@ playBtn.addEventListener('click', () => {
         broadcastSync('PAUSE');
     } else {
         ytPlayer.playVideo();
-        broadcastSync('PLAY');
+        // Delay broadcast so YT has time to start and getVideoData works
+        setTimeout(() => broadcastSync('PLAY'), 500);
     }
-    setTimeout(() => isLocalAction = false, 500);
+    setTimeout(() => isLocalAction = false, 800);
 });
 
 nextBtn.addEventListener('click', () => {
+    if (!ytPlayer) return;
     isLocalAction = true;
-    nextTrack();
-    setTimeout(() => { broadcastSync('PLAY'); isLocalAction = false; }, 1000);
+    ytPlayer.nextVideo();
+    setTimeout(() => {
+        broadcastSync('TRACK_CHANGE');
+        isLocalAction = false;
+    }, 1500);
 });
 
 prevBtn.addEventListener('click', () => {
-    if (ytPlayer) {
-        isLocalAction = true;
-        ytPlayer.previousVideo();
-        setTimeout(() => { broadcastSync('PLAY'); isLocalAction = false; }, 1000);
-    }
+    if (!ytPlayer) return;
+    isLocalAction = true;
+    ytPlayer.previousVideo();
+    setTimeout(() => {
+        broadcastSync('TRACK_CHANGE');
+        isLocalAction = false;
+    }, 1500);
 });
-
-function nextTrack() {
-    if (ytPlayer) ytPlayer.nextVideo();
-}
 
 progressContainer.addEventListener('click', (e) => {
     if (!ytPlayer || !ytPlayer.getDuration) return;
@@ -149,10 +196,27 @@ progressContainer.addEventListener('click', (e) => {
     const seekTime = pos * ytPlayer.getDuration();
     ytPlayer.seekTo(seekTime);
     broadcastSync('SEEK', { time: seekTime });
-    setTimeout(() => isLocalAction = false, 500);
+    setTimeout(() => isLocalAction = false, 800);
 });
 
-// --- UI Updates ---
+// Mute
+muteBtn.addEventListener('click', () => {
+    if (!ytPlayer) return;
+    if (isMuted) {
+        ytPlayer.unMute();
+        iconMute.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M11 5L6 9H2v6h4l5 4V5z"></path>`;
+    } else {
+        ytPlayer.mute();
+        iconMute.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2"></path>`;
+    }
+    isMuted = !isMuted;
+    muteBtn.classList.toggle('text-white/50', !isMuted);
+    muteBtn.classList.toggle('text-emerald-400', isMuted);
+});
+
+// ========================================
+// UI UPDATES
+// ========================================
 function updatePlayIconUI(playing) {
     if (playing) {
         playIcon.innerHTML = `<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>`;
@@ -168,8 +232,10 @@ function updateTrackData() {
     try {
         const data = ytPlayer.getVideoData();
         if (data && data.title) trackNameEl.innerText = data.title;
-        if (data && data.video_id) coverArtEl.style.backgroundImage = `url('https://img.youtube.com/vi/${data.video_id}/hqdefault.jpg')`;
-    } catch(e) {}
+        if (data && data.video_id) {
+            coverArtEl.style.backgroundImage = `url('https://img.youtube.com/vi/${data.video_id}/hqdefault.jpg')`;
+        }
+    } catch (e) { }
 }
 
 function startMetadataPolling() {
@@ -197,144 +263,405 @@ function formatTime(s) {
     return `${m}:${sec < 10 ? '0' : ''}${sec}`;
 }
 
-// --- Sync / MQTT Logic ---
+// ========================================
+// TOAST NOTIFICATIONS
+// ========================================
+function showToast(message, duration = 3000) {
+    const t = document.createElement('div');
+    t.className = 'toast-notification pointer-events-auto';
+    t.innerHTML = `<span class="text-xs">${message}</span>`;
+    toastContainer.appendChild(t);
+    // Trigger entrance animation
+    requestAnimationFrame(() => t.classList.add('show'));
+    setTimeout(() => {
+        t.classList.remove('show');
+        setTimeout(() => t.remove(), 300);
+    }, duration);
+}
+
+// ========================================
+// ROOM CODE GENERATION
+// ========================================
+function generateRoomCode() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // No I/O/0/1 to avoid confusion
+    let code = '';
+    for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+    return code;
+}
+
+// ========================================
+// MODAL LOGIC
+// ========================================
 function openRoomModal() {
+    // Generate a fresh code every time the modal opens
+    generatedCodeEl.innerText = generateRoomCode();
+    
+    // Reset to Create tab
+    switchTab('create');
+    roomInput.value = '';
+    
     roomModal.classList.remove('hidden');
     setTimeout(() => {
         roomModal.classList.remove('opacity-0');
         roomModalCard.classList.remove('scale-95');
     }, 10);
-    roomInput.value = currentRoom || '';
-    if (isGroupMode) {
-        btnJoinRoom.innerText = "Switch Room";
-        btnLeaveRoom.classList.remove('hidden');
-    } else {
-        btnJoinRoom.innerText = "Join / Create";
-        btnLeaveRoom.classList.add('hidden');
-    }
 }
 
 function closeRoomModal() {
     roomModal.classList.add('opacity-0');
     roomModalCard.classList.add('scale-95');
-    setTimeout(() => {
-        roomModal.classList.add('hidden');
-    }, 300);
+    setTimeout(() => roomModal.classList.add('hidden'), 300);
 }
 
-function joinRoom(roomName) {
-    if (!roomName) return;
-    currentRoom = roomName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-    isGroupMode = true;
+function switchTab(tab) {
+    if (tab === 'create') {
+        tabCreate.className = 'flex-1 py-2.5 rounded-lg text-sm font-bold text-center transition-all bg-emerald-500/20 text-emerald-400';
+        tabJoin.className = 'flex-1 py-2.5 rounded-lg text-sm font-bold text-center transition-all text-white/50 hover:text-white/80';
+        panelCreate.classList.remove('hidden');
+        panelJoin.classList.add('hidden');
+    } else {
+        tabJoin.className = 'flex-1 py-2.5 rounded-lg text-sm font-bold text-center transition-all bg-emerald-500/20 text-emerald-400';
+        tabCreate.className = 'flex-1 py-2.5 rounded-lg text-sm font-bold text-center transition-all text-white/50 hover:text-white/80';
+        panelJoin.classList.remove('hidden');
+        panelCreate.classList.add('hidden');
+        setTimeout(() => roomInput.focus(), 100);
+    }
+}
+
+// ========================================
+// MQTT ROOM SYNC ENGINE
+// ========================================
+function connectMQTT(roomCode, callback) {
+    if (mqttClient) {
+        mqttClient.end(true);
+        mqttClient = null;
+    }
     
-    // Update URL without reloading
-    const newurl = window.location.protocol + "//" + window.location.host + window.location.pathname + '?room=' + currentRoom;
-    window.history.pushState({path:newurl},'',newurl);
-
-    // Update UI
-    roomStatusText.innerText = 'Room: ' + currentRoom;
-    roomStatusIndicator.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.8)]';
-    roomStatusText.classList.add('text-emerald-400');
-    btnToggleMode.classList.add('border-emerald-500/30');
-
-    // Connect to MQTT
-    if (mqttClient) mqttClient.end();
-    mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
+    const clientId = 'or_' + Math.random().toString(36).substring(2, 10);
+    
+    mqttClient = mqtt.connect(MQTT_BROKER, {
+        clientId: clientId,
+        clean: true,
+        connectTimeout: 5000,
+        reconnectPeriod: 3000,  // Auto-reconnect every 3s
+        keepalive: 30
+    });
     
     mqttClient.on('connect', () => {
-        console.log('Connected to MQTT room:', currentRoom);
-        mqttClient.subscribe(`office-radio/room/${currentRoom}`);
+        console.log('[MQTT] Connected to broker, room:', roomCode);
+        
+        // Subscribe to room sync and presence topics
+        mqttClient.subscribe(`${MQTT_PREFIX}/room/${roomCode}/sync`);
+        mqttClient.subscribe(`${MQTT_PREFIX}/room/${roomCode}/presence`);
+        
+        // Announce presence
+        publishPresence('JOIN');
+        
+        if (callback) callback();
     });
-
+    
     mqttClient.on('message', (topic, message) => {
-        if (isLocalAction) return; // Ignore incoming syncs if we just clicked something
         try {
             const data = JSON.parse(message.toString());
-            handleSyncMessage(data);
-        } catch(e) {}
+            
+            // Ignore our own messages
+            if (data.senderId === myClientId) return;
+            
+            if (topic.endsWith('/sync')) {
+                handleSyncMessage(data);
+            } else if (topic.endsWith('/presence')) {
+                handlePresenceMessage(data);
+            }
+        } catch (e) {
+            console.warn('[MQTT] Parse error:', e);
+        }
     });
-
-    // Start auto-broadcasting if we are playing
-    if (syncBroadcastTimer) clearInterval(syncBroadcastTimer);
-    syncBroadcastTimer = setInterval(() => {
-        if (isPlaying && !isLocalAction) broadcastSync('HEARTBEAT');
-    }, 3000);
-
-    closeRoomModal();
+    
+    mqttClient.on('error', (err) => {
+        console.error('[MQTT] Error:', err);
+    });
+    
+    mqttClient.on('reconnect', () => {
+        console.log('[MQTT] Reconnecting...');
+    });
+    
+    mqttClient.on('close', () => {
+        console.log('[MQTT] Connection closed');
+    });
 }
 
-function leaveRoom() {
-    isGroupMode = false;
-    currentRoom = null;
-    if (mqttClient) mqttClient.end();
-    if (syncBroadcastTimer) clearInterval(syncBroadcastTimer);
-    
-    const newurl = window.location.protocol + "//" + window.location.host + window.location.pathname;
-    window.history.pushState({path:newurl},'',newurl);
-
-    roomStatusText.innerText = 'Solo Mode';
-    roomStatusIndicator.className = 'w-2 h-2 rounded-full bg-gray-400';
-    roomStatusText.classList.remove('text-emerald-400');
-    btnToggleMode.classList.remove('border-emerald-500/30');
-    
-    closeRoomModal();
+function publishPresence(action) {
+    if (!mqttClient || !currentRoom) return;
+    mqttClient.publish(`${MQTT_PREFIX}/room/${currentRoom}/presence`, JSON.stringify({
+        action: action,
+        senderId: myClientId,
+        timestamp: Date.now()
+    }));
 }
 
+// Room member tracking
+let roomMembers = new Set();
+
+function handlePresenceMessage(data) {
+    if (data.action === 'JOIN') {
+        roomMembers.add(data.senderId);
+        // Reply with our own presence so the new joiner knows we're here
+        publishPresence('HERE');
+        showToast('🟢 Someone joined the room');
+    } else if (data.action === 'HERE') {
+        roomMembers.add(data.senderId);
+    } else if (data.action === 'LEAVE') {
+        roomMembers.delete(data.senderId);
+        showToast('🔴 Someone left the room');
+    }
+    updateListenerCount();
+}
+
+function updateListenerCount() {
+    // +1 for ourselves
+    const count = roomMembers.size + 1;
+    listenerCountEl.innerText = count;
+}
+
+// ========================================
+// SYNC LOGIC
+// ========================================
 function broadcastSync(action, extraData = {}) {
     if (!isGroupMode || !mqttClient || !ytPlayer) return;
     
+    let videoId = '';
     let trackIndex = 0;
-    try { trackIndex = ytPlayer.getPlaylistIndex(); } catch(e){}
-    
     let time = 0;
-    try { time = ytPlayer.getCurrentTime(); } catch(e){}
-
+    let title = '';
+    
+    try { 
+        const vd = ytPlayer.getVideoData();
+        videoId = vd.video_id || '';
+        title = vd.title || '';
+    } catch (e) { }
+    try { trackIndex = ytPlayer.getPlaylistIndex(); } catch (e) { }
+    try { time = ytPlayer.getCurrentTime(); } catch (e) { }
+    
     const payload = {
-        action: action,
-        trackIndex: trackIndex,
-        time: time,
-        hostId: activeHostId,
+        action,
+        videoId,
+        trackIndex,
+        time,
+        title,
+        senderId: myClientId,
+        timestamp: Date.now(),
         ...extraData
     };
     
-    mqttClient.publish(`office-radio/room/${currentRoom}`, JSON.stringify(payload));
+    mqttClient.publish(`${MQTT_PREFIX}/room/${currentRoom}/sync`, JSON.stringify(payload));
 }
 
 function handleSyncMessage(data) {
-    if (!ytPlayer) return;
+    if (!ytPlayer || isLocalAction) return;
     
-    const currentIndex = ytPlayer.getPlaylistIndex();
-    
-    if (data.action === 'PLAY' || data.action === 'HEARTBEAT') {
-        if (data.trackIndex !== currentIndex) {
-            ytPlayer.playVideoAt(data.trackIndex);
+    if (data.action === 'PLAY' || data.action === 'TRACK_CHANGE') {
+        // If different video, load it
+        try {
+            const currentVideoId = ytPlayer.getVideoData().video_id;
+            if (data.videoId && data.videoId !== currentVideoId) {
+                ytPlayer.loadVideoById(data.videoId, data.time || 0);
+                showToast(`🎵 Now Playing: ${data.title || 'Unknown'}`);
+            } else if (!isPlaying) {
+                ytPlayer.playVideo();
+            }
+        } catch (e) {
+            if (data.videoId) ytPlayer.loadVideoById(data.videoId, data.time || 0);
         }
-        if (!isPlaying && data.action === 'PLAY') {
-            ytPlayer.playVideo();
-        }
-        
-        // Sync time if drift > 2 seconds
-        const currentTime = ytPlayer.getCurrentTime() || 0;
-        if (Math.abs(currentTime - data.time) > 2.5) {
-            ytPlayer.seekTo(data.time);
-        }
-    } 
+    }
     else if (data.action === 'PAUSE') {
         ytPlayer.pauseVideo();
     }
     else if (data.action === 'SEEK') {
         ytPlayer.seekTo(data.time);
     }
+    else if (data.action === 'HEARTBEAT') {
+        // Sync time drift if > 3 seconds
+        try {
+            const currentVideoId = ytPlayer.getVideoData().video_id;
+            if (data.videoId && data.videoId !== currentVideoId) {
+                ytPlayer.loadVideoById(data.videoId, data.time || 0);
+            } else {
+                const currentTime = ytPlayer.getCurrentTime() || 0;
+                if (Math.abs(currentTime - data.time) > 3) {
+                    ytPlayer.seekTo(data.time);
+                }
+                if (data.action === 'HEARTBEAT' && !isPlaying) {
+                    ytPlayer.playVideo();
+                }
+            }
+        } catch (e) { }
+    }
+    else if (data.action === 'LOAD_VIDEO') {
+        ytPlayer.loadVideoById(data.videoId, 0);
+        showToast(`🎵 Now Playing: ${data.title || 'Unknown'}`);
+    }
+    else if (data.action === 'LOAD_PLAYLIST') {
+        ytPlayer.loadPlaylist({ listType: 'playlist', list: data.playlistId, index: 0 });
+        showToast(`📋 Playlist changed`);
+    }
 }
 
-// Modal Listeners
-btnToggleMode.addEventListener('click', openRoomModal);
-btnCancelRoom.addEventListener('click', closeRoomModal);
-btnJoinRoom.addEventListener('click', () => joinRoom(roomInput.value));
-btnLeaveRoom.addEventListener('click', leaveRoom);
-roomInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') joinRoom(roomInput.value); });
+// ========================================
+// JOIN / CREATE / LEAVE ROOM
+// ========================================
+function joinRoom(roomCode) {
+    if (!roomCode || roomCode.length < 3) return;
+    
+    currentRoom = roomCode.toUpperCase();
+    isGroupMode = true;
+    roomMembers.clear();
+    
+    // Update URL
+    const newurl = window.location.protocol + "//" + window.location.host + window.location.pathname + '?room=' + currentRoom;
+    window.history.pushState({ path: newurl }, '', newurl);
+    
+    // Update UI: hide buttons, show connected bar
+    roomButtons.classList.add('hidden');
+    roomConnectedBar.classList.remove('hidden');
+    roomConnectedBar.classList.add('flex');
+    connectedRoomCode.innerText = currentRoom;
+    updateListenerCount();
+    
+    // Connect MQTT
+    connectMQTT(currentRoom, () => {
+        showToast(`✅ Connected to room ${currentRoom}`);
+    });
+    
+    // Start heartbeat broadcast (every 3 seconds while playing)
+    if (syncBroadcastTimer) clearInterval(syncBroadcastTimer);
+    syncBroadcastTimer = setInterval(() => {
+        if (isPlaying && !isLocalAction) broadcastSync('HEARTBEAT');
+    }, 3000);
+    
+    closeRoomModal();
+}
 
-// --- Pomodoro Logic ---
+function leaveRoom() {
+    // Announce departure
+    publishPresence('LEAVE');
+    
+    isGroupMode = false;
+    currentRoom = null;
+    roomMembers.clear();
+    
+    if (mqttClient) { mqttClient.end(true); mqttClient = null; }
+    if (syncBroadcastTimer) { clearInterval(syncBroadcastTimer); syncBroadcastTimer = null; }
+    
+    // Reset URL
+    const newurl = window.location.protocol + "//" + window.location.host + window.location.pathname;
+    window.history.pushState({ path: newurl }, '', newurl);
+    
+    // Update UI: show buttons, hide connected bar
+    roomButtons.classList.remove('hidden');
+    roomConnectedBar.classList.add('hidden');
+    roomConnectedBar.classList.remove('flex');
+    
+    showToast('👋 Left the room — Solo mode');
+}
+
+// ========================================
+// VISITOR COUNTER (GLOBAL)
+// ========================================
+function startVisitorTracking() {
+    const visitorClient = mqtt.connect(MQTT_BROKER, {
+        clientId: 'vis_' + Math.random().toString(36).substring(2, 10),
+        clean: true,
+        connectTimeout: 5000,
+        reconnectPeriod: 5000,
+        keepalive: 30
+    });
+    
+    visitorClient.on('connect', () => {
+        visitorClient.subscribe(`${MQTT_PREFIX}/visitors`);
+        
+        // Send heartbeat immediately and every 10 seconds
+        const sendHeartbeat = () => {
+            visitorClient.publish(`${MQTT_PREFIX}/visitors`, JSON.stringify({
+                id: myClientId,
+                ts: Date.now()
+            }));
+        };
+        
+        sendHeartbeat();
+        visitorHeartbeatTimer = setInterval(sendHeartbeat, 10000);
+    });
+    
+    visitorClient.on('message', (topic, message) => {
+        try {
+            const data = JSON.parse(message.toString());
+            visitorMap[data.id] = data.ts;
+            
+            // Count visitors seen in last 30 seconds
+            const now = Date.now();
+            const activeVisitors = Object.values(visitorMap).filter(ts => now - ts < 30000).length;
+            visitorCountEl.innerText = activeVisitors;
+        } catch (e) { }
+    });
+    
+    // Cleanup stale visitors every 15 seconds
+    setInterval(() => {
+        const now = Date.now();
+        for (const id in visitorMap) {
+            if (now - visitorMap[id] > 30000) delete visitorMap[id];
+        }
+    }, 15000);
+}
+
+// ========================================
+// EVENT LISTENERS — ROOM MODAL
+// ========================================
+btnGroup.addEventListener('click', openRoomModal);
+btnSolo.addEventListener('click', () => {
+    // Already in solo mode, just visually confirm
+    showToast('🎧 You are in Solo mode');
+});
+btnCancelModal.addEventListener('click', closeRoomModal);
+
+tabCreate.addEventListener('click', () => switchTab('create'));
+tabJoin.addEventListener('click', () => switchTab('join'));
+
+btnCopyCode.addEventListener('click', () => {
+    const code = generatedCodeEl.innerText;
+    navigator.clipboard.writeText(code).then(() => {
+        btnCopyCode.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Copied!`;
+        setTimeout(() => {
+            btnCopyCode.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg> Copy Code`;
+        }, 2000);
+    });
+});
+
+btnCreateGo.addEventListener('click', () => {
+    joinRoom(generatedCodeEl.innerText);
+});
+
+btnJoinGo.addEventListener('click', () => {
+    joinRoom(roomInput.value.trim());
+});
+
+roomInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') joinRoom(roomInput.value.trim());
+});
+
+// Force uppercase as user types
+roomInput.addEventListener('input', () => {
+    roomInput.value = roomInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+});
+
+btnCloseRoom.addEventListener('click', leaveRoom);
+
+// Close modal on backdrop click
+roomModal.addEventListener('click', (e) => {
+    if (e.target === roomModal) closeRoomModal();
+});
+
+// ========================================
+// POMODORO TIMER
+// ========================================
 function updateTimerDisplay() {
     const m = Math.floor(timeLeft / 60);
     const s = timeLeft % 60;
@@ -349,7 +676,7 @@ function toggleTimer() {
     } else {
         isTimerRunning = true;
         btnTimerToggle.innerText = 'Pause Timer';
-        if(isWorkSession && !isPlaying && ytPlayer) ytPlayer.playVideo();
+        if (isWorkSession && !isPlaying && ytPlayer) ytPlayer.playVideo();
 
         timerInterval = setInterval(() => {
             timeLeft--;
@@ -389,13 +716,11 @@ function switchSession() {
 btnTimerToggle.addEventListener('click', toggleTimer);
 btnTimerReset.addEventListener('click', resetTimer);
 
-// Init
-updateTimerDisplay();
-init();
-
-// --- Ambient Animations ---
-const particlesContainer = document.getElementById('particles');
-if(particlesContainer) {
+// ========================================
+// AMBIENT ANIMATIONS
+// ========================================
+const particlesContainer = $('particles');
+if (particlesContainer) {
     for (let i = 0; i < 40; i++) {
         let p = document.createElement('div');
         p.className = 'particle';
@@ -407,3 +732,9 @@ if(particlesContainer) {
         particlesContainer.appendChild(p);
     }
 }
+
+// ========================================
+// INIT
+// ========================================
+updateTimerDisplay();
+init();

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Office Radio | Synced Deep Work</title>
+    <title>Office Radio | Ad-Free Music for Your Team</title>
     
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -38,12 +38,9 @@
     
     <!-- Animated Office Background -->
     <div class="absolute inset-0 z-0 bg-[#0a0f1a] overflow-hidden flex items-center justify-center">
-        <!-- The background image slightly scaled up so we can add a slow pan animation if needed -->
         <img id="bg-image" src="assets/bg.jpg" class="w-full h-full object-cover opacity-90 transition-all duration-1000 scale-[1.02]" alt="Office Background">
         <div class="absolute inset-0 bg-black/40 backdrop-brightness-75 mix-blend-overlay"></div>
         <div class="absolute inset-0 bg-gradient-to-t from-[#0a0f1a] via-transparent to-transparent"></div>
-        
-        <!-- Animated Particles / Dust motes -->
         <div id="particles" class="absolute inset-0 pointer-events-none"></div>
     </div>
 
@@ -52,16 +49,26 @@
         <div id="youtubeBridge"></div>
     </div>
 
-    <!-- Main UI Container (Glassmorphism) -->
-    <main class="relative z-10 w-full max-w-md mx-4 p-6 sm:p-8 rounded-[2rem] glass-panel flex flex-col gap-6 transition-all duration-500">
+    <!-- Toast Container (for "Now Playing" notifications) -->
+    <div id="toast-container" class="fixed top-4 right-4 z-[60] flex flex-col gap-2 pointer-events-none"></div>
+
+    <!-- Main UI Container -->
+    <main class="relative z-10 w-full max-w-md mx-4 p-6 sm:p-8 rounded-[2rem] glass-panel flex flex-col gap-5 transition-all duration-500">
         
         <!-- Header -->
-        <header class="flex items-center justify-center mb-2">
+        <header class="flex items-center justify-between">
             <h1 class="text-xl font-bold tracking-tight text-white/90">Office Radio</h1>
+            <div class="flex items-center gap-3">
+                <!-- Visitor Counter -->
+                <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-glass-100 text-[10px] font-medium text-white/50" title="Live visitors on this site">
+                    <span class="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse"></span>
+                    <span id="visitor-count">1</span> online
+                </div>
+            </div>
         </header>
 
         <!-- Pomodoro Timer -->
-        <section class="flex flex-col items-center justify-center py-4">
+        <section class="flex flex-col items-center justify-center py-3">
             <div id="timer-display" class="text-6xl font-bold tracking-tighter text-white drop-shadow-md font-mono">25:00</div>
             <div id="timer-label" class="text-sm font-medium text-white/60 uppercase tracking-widest mt-1">Deep Work</div>
             
@@ -71,29 +78,26 @@
             </div>
         </section>
 
-        <hr class="border-glass-200">
+        <hr class="border-white/10">
 
         <!-- Music Player -->
         <section class="flex flex-col gap-4">
             <div class="flex items-center gap-4">
-                <div class="w-14 h-14 rounded-full bg-gray-800 border-2 border-glass-300 flex-shrink-0 overflow-hidden shadow-lg relative group">
-                    <div id="cover-art" class="w-full h-full bg-cover bg-center transition-transform duration-500" style="background-image: url('https://images.unsplash.com/photo-1614680376593-902f74a8140e?q=80&w=2574&auto=format&fit=crop');"></div>
-                    <div class="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                        <span class="text-xs font-medium">🎵</span>
-                    </div>
+                <div class="w-14 h-14 rounded-full bg-gray-800 border-2 border-white/20 flex-shrink-0 overflow-hidden shadow-lg relative group">
+                    <div id="cover-art" class="w-full h-full bg-cover bg-center transition-transform duration-500" style="background-image: url('https://images.unsplash.com/photo-1614680376593-902f74a8140e?q=80&w=200&auto=format&fit=crop');"></div>
                 </div>
                 
                 <div class="flex-1 min-w-0">
                     <h2 class="text-sm font-bold text-white truncate drop-shadow-sm flex items-center">
-                        <span id="track-name">Loading Track...</span>
+                        <span id="track-name">Press Play to start...</span>
                         <span class="cursor-blink"></span>
                     </h2>
-                    <p id="playlist-name" class="text-xs text-white/60 truncate mt-0.5">Focus Beats</p>
+                    <p id="playlist-name" class="text-xs text-white/60 truncate mt-0.5">Office Playlist</p>
                     
                     <!-- Progress Bar -->
                     <div class="flex items-center gap-2 mt-2">
                         <span id="time-now" class="text-[10px] text-white/50 font-mono">0:00</span>
-                        <div class="flex-1 h-1.5 bg-glass-100 rounded-full overflow-hidden cursor-pointer" id="progress-container">
+                        <div class="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden cursor-pointer" id="progress-container">
                             <div id="progress-fill" class="h-full bg-emerald-400 w-0 transition-all duration-300 rounded-full pointer-events-none"></div>
                         </div>
                         <span id="time-total" class="text-[10px] text-white/50 font-mono">0:00</span>
@@ -102,7 +106,7 @@
             </div>
 
             <!-- Player Controls -->
-            <div class="flex items-center justify-center gap-6 mt-2">
+            <div class="flex items-center justify-center gap-6 mt-1 relative">
                 <button id="btn-prev" class="text-white/70 hover:text-white transition-colors active:scale-90" aria-label="Previous">
                     <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M7 6c.55 0 1 .45 1 1v10c0 .55-.45 1-1 1s-1-.45-1-1V7c0-.55.45-1 1-1zm3.66 6.82l5.77 4.07c.66.47 1.58-.01 1.58-.82V7.93c0-.81-.91-1.28-1.58-.82l-5.77 4.07c-.57.4-.57 1.24 0 1.64z"/></svg>
                 </button>
@@ -112,53 +116,82 @@
                 <button id="btn-next" class="text-white/70 hover:text-white transition-colors active:scale-90" aria-label="Next">
                     <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M7.58 16.89l5.77-4.07c.56-.4.56-1.24 0-1.63L7.58 7.11C6.91 6.65 6 7.12 6 7.93v8.14c0 .81.91 1.28 1.58.82zM16 7v10c0 .55.45 1 1 1s1-.45 1-1V7c0-.55-.45-1-1-1s-1 .45-1 1z"/></svg>
                 </button>
-            </div>
-            
-            <!-- Veto Voting -->
-            <div class="flex items-center justify-between mt-2 pt-3 border-t border-glass-100">
-                <span class="text-xs text-white/50">Veto Skip</span>
-                <button id="btn-veto" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-glass-100 hover:bg-glass-200 border border-glass-200 text-xs font-medium text-white/80 hover:text-white transition-colors active:scale-95">
-                    <span>Vote to Skip</span>
-                    <span id="veto-count" class="bg-black/30 px-1.5 py-0.5 rounded text-[10px]">0/2</span>
+                <button id="btn-mute" class="absolute right-0 text-white/50 hover:text-white/90 transition-colors active:scale-90" aria-label="Mute">
+                    <svg id="icon-mute" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M11 5L6 9H2v6h4l5 4V5z"></path></svg>
                 </button>
             </div>
         </section>
 
-        <!-- Removed Vibe Shifts as requested -->
+        <hr class="border-white/10">
 
-        <!-- Group Listening / Room -->
-        <section class="mt-2 pt-4 border-t border-white/10 flex items-center justify-between">
-            <div>
-                <p class="text-[10px] font-bold text-white/40 uppercase tracking-wider mb-1">Session Mode</p>
+        <!-- Session Mode -->
+        <section class="flex flex-col gap-3">
+            <p class="text-[10px] font-bold text-white/40 uppercase tracking-wider">Session Mode</p>
+            
+            <!-- Room Status (when connected) -->
+            <div id="room-connected-bar" class="hidden flex items-center justify-between p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
                 <div class="flex items-center gap-2">
-                    <span id="room-status-indicator" class="w-2 h-2 rounded-full bg-gray-400"></span>
-                    <span id="room-status-text" class="text-sm font-medium text-white/80">Solo Listening</span>
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.8)]"></span>
+                    <span class="text-sm font-bold text-emerald-400">Room: <span id="connected-room-code" class="font-mono">------</span></span>
+                    <span class="text-xs text-white/40 ml-1">· <span id="listener-count">1</span> listening</span>
                 </div>
+                <button id="btn-close-room" class="text-xs text-red-400 hover:text-red-300 font-medium px-2 py-1 rounded-lg hover:bg-red-500/10 transition-colors">Leave</button>
             </div>
-            <button id="btn-toggle-mode" class="px-4 py-2 rounded-xl bg-glass-200 hover:bg-glass-300 border border-white/20 text-white text-xs font-bold transition-all active:scale-95 flex items-center gap-2 shadow-lg">
-                <svg class="w-4 h-4 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
-                Join / Create Room
-            </button>
+            
+            <!-- Solo / Group Buttons (when not connected) -->
+            <div id="room-buttons" class="grid grid-cols-2 gap-3">
+                <button id="btn-solo" class="flex items-center justify-center gap-2 p-3 rounded-xl bg-glass-200 border border-emerald-500/30 text-sm font-medium text-white transition-all active:scale-95">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0"></path></svg>
+                    🎧 Solo
+                </button>
+                <button id="btn-group" class="flex items-center justify-center gap-2 p-3 rounded-xl bg-glass-100 border border-white/10 hover:bg-glass-200 hover:border-white/20 text-sm font-medium text-white/80 hover:text-white transition-all active:scale-95">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z"></path></svg>
+                    👥 Group
+                </button>
+            </div>
         </section>
         
     </main>
 
-    <!-- Room Join Modal -->
-    <div id="room-modal" class="hidden absolute inset-0 z-50 bg-black/60 backdrop-blur-md flex items-center justify-center p-4 opacity-0 transition-opacity duration-300">
+    <!-- Room Modal (Create / Join) -->
+    <div id="room-modal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-md flex items-center justify-center p-4 opacity-0 transition-opacity duration-300">
         <div class="glass-panel p-6 sm:p-8 rounded-[2rem] w-full max-w-sm flex flex-col gap-5 transform scale-95 transition-transform duration-300" id="room-modal-card">
-            <div class="text-center">
-                <h3 class="text-xl font-bold text-white mb-2">Group Session</h3>
-                <p class="text-xs text-white/60 leading-relaxed">Enter a room name to sync music with your colleagues. Anyone with this name will listen to the same music.</p>
+            
+            <!-- Tab Switcher -->
+            <div class="flex rounded-xl bg-black/30 p-1">
+                <button id="tab-create" class="flex-1 py-2.5 rounded-lg text-sm font-bold text-center transition-all bg-emerald-500/20 text-emerald-400">Create Room</button>
+                <button id="tab-join" class="flex-1 py-2.5 rounded-lg text-sm font-bold text-center transition-all text-white/50 hover:text-white/80">Join Room</button>
+            </div>
+
+            <!-- Create Room Panel -->
+            <div id="panel-create" class="flex flex-col items-center gap-4">
+                <p class="text-xs text-white/50 text-center leading-relaxed">Start a group session. Share the code below with your colleagues so they can join and listen together.</p>
+                
+                <div class="w-full p-4 rounded-xl bg-black/40 border border-white/10 text-center">
+                    <p class="text-3xl font-mono font-bold text-emerald-400 tracking-[0.3em]" id="generated-room-code">------</p>
+                    <p class="text-[10px] text-white/30 mt-1">Your Room Code</p>
+                </div>
+                
+                <div class="flex gap-3 w-full">
+                    <button id="btn-copy-code" class="flex-1 py-3 rounded-xl bg-glass-200 hover:bg-glass-300 text-white text-xs font-bold transition-all active:scale-95 flex items-center justify-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                        Copy Code
+                    </button>
+                    <button id="btn-create-go" class="flex-1 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold shadow-[0_0_15px_rgba(52,211,153,0.4)] hover:shadow-[0_0_25px_rgba(52,211,153,0.6)] transition-all active:scale-95">Start Listening →</button>
+                </div>
+            </div>
+
+            <!-- Join Room Panel -->
+            <div id="panel-join" class="hidden flex flex-col items-center gap-4">
+                <p class="text-xs text-white/50 text-center leading-relaxed">Enter the 6-character room code shared by your colleague to sync your music together.</p>
+                
+                <input type="text" id="room-input" placeholder="e.g. X7K2M9" maxlength="6" class="w-full px-4 py-4 rounded-xl bg-black/40 border border-white/20 text-white focus:outline-none focus:border-emerald-400 text-2xl font-mono font-bold transition-colors text-center tracking-[0.3em] uppercase placeholder:text-white/20 placeholder:tracking-[0.3em]" autocomplete="off">
+                
+                <button id="btn-join-go" class="w-full py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black text-sm font-bold shadow-[0_0_15px_rgba(52,211,153,0.4)] hover:shadow-[0_0_25px_rgba(52,211,153,0.6)] transition-all active:scale-95">Join Room →</button>
             </div>
             
-            <input type="text" id="room-input" placeholder="e.g. design-team" class="w-full px-4 py-3 rounded-xl bg-black/40 border border-white/20 text-white focus:outline-none focus:border-emerald-400 text-sm font-medium transition-colors text-center" autocomplete="off">
-            
-            <div class="flex flex-col gap-3 mt-2">
-                <button id="btn-join-room" class="w-full py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black text-sm font-bold shadow-[0_0_15px_rgba(52,211,153,0.4)] hover:shadow-[0_0_25px_rgba(52,211,153,0.6)] transition-all active:scale-95">Join Room</button>
-                <button id="btn-cancel-room" class="w-full py-3 rounded-xl bg-glass-100 text-white/70 hover:bg-glass-200 text-sm font-medium transition-colors active:scale-95">Cancel</button>
-            </div>
-            
-            <button id="btn-leave-room" class="hidden w-full py-3 rounded-xl bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 text-sm font-bold transition-colors active:scale-95">Disconnect (Solo Mode)</button>
+            <!-- Cancel -->
+            <button id="btn-cancel-modal" class="w-full py-3 rounded-xl bg-glass-100 text-white/50 hover:text-white/80 hover:bg-glass-200 text-sm font-medium transition-colors active:scale-95">Cancel</button>
         </div>
     </div>
 
