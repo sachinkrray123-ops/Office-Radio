@@ -62,6 +62,11 @@ const timerLabel = $('timer-label');
 const btnTimerToggle = $('btn-timer-toggle');
 const btnTimerReset = $('btn-timer-reset');
 
+const volumeSlider = $('volume-slider');
+const linkInput = $('link-input');
+const btnLoadLink = $('btn-load-link');
+const linkError = $('link-error');
+
 // Room UI
 const roomModal = $('room-modal');
 const roomModalCard = $('room-modal-card');
@@ -127,7 +132,7 @@ function onYouTubeIframeAPIReady() {
 }
 
 function onPlayerReady(event) {
-    event.target.setVolume(100);
+    event.target.setVolume(parseInt(volumeSlider.value) || 100);
     startMetadataPolling();
 }
 
@@ -199,19 +204,48 @@ progressContainer.addEventListener('click', (e) => {
     setTimeout(() => isLocalAction = false, 800);
 });
 
-// Mute
+// Volume and Mute
+let previousVolume = 100;
+
+volumeSlider.addEventListener('input', (e) => {
+    if (!ytPlayer) return;
+    const vol = parseInt(e.target.value);
+    ytPlayer.setVolume(vol);
+    if (vol === 0 && !isMuted) {
+        toggleMuteIcon(true);
+    } else if (vol > 0 && isMuted) {
+        toggleMuteIcon(false);
+    }
+});
+
+function toggleMuteIcon(mute) {
+    isMuted = mute;
+    if (mute) {
+        iconMute.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2"></path>`;
+        muteBtn.classList.add('text-emerald-400');
+        muteBtn.classList.remove('text-white/50');
+    } else {
+        iconMute.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M11 5L6 9H2v6h4l5 4V5z"></path>`;
+        muteBtn.classList.remove('text-emerald-400');
+        muteBtn.classList.add('text-white/50');
+    }
+}
+
 muteBtn.addEventListener('click', () => {
     if (!ytPlayer) return;
     if (isMuted) {
         ytPlayer.unMute();
-        iconMute.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M11 5L6 9H2v6h4l5 4V5z"></path>`;
+        let vol = parseInt(volumeSlider.value);
+        if (vol === 0) {
+            vol = 100;
+            volumeSlider.value = 100;
+        }
+        ytPlayer.setVolume(vol);
+        toggleMuteIcon(false);
     } else {
         ytPlayer.mute();
-        iconMute.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2"></path>`;
+        toggleMuteIcon(true);
     }
-    isMuted = !isMuted;
-    muteBtn.classList.toggle('text-white/50', !isMuted);
-    muteBtn.classList.toggle('text-emerald-400', isMuted);
 });
 
 // ========================================
@@ -671,6 +705,62 @@ btnCloseRoom.addEventListener('click', leaveRoom);
 // Close modal on backdrop click
 roomModal.addEventListener('click', (e) => {
     if (e.target === roomModal) closeRoomModal();
+});
+
+// ========================================
+// CUSTOM LINK HANDLING
+// ========================================
+function handleLinkSubmit() {
+    const url = linkInput.value.trim();
+    if (!url) return;
+    
+    linkError.classList.add('hidden');
+    let videoId = null;
+    let playlistId = null;
+
+    try {
+        const urlObj = new URL(url);
+        if (urlObj.hostname.includes('youtube.com')) {
+            playlistId = urlObj.searchParams.get('list');
+            videoId = urlObj.searchParams.get('v');
+        } else if (urlObj.hostname === 'youtu.be') {
+            videoId = urlObj.pathname.substring(1);
+            playlistId = urlObj.searchParams.get('list');
+        }
+    } catch (e) {
+        // Fallback regex
+        const listMatch = url.match(/[?&]list=([^#\&\?]+)/);
+        if (listMatch) playlistId = listMatch[1];
+        
+        const videoMatch = url.match(/(?:v=|youtu\.be\/)([^#\&\?]+)/);
+        if (videoMatch) videoId = videoMatch[1];
+    }
+
+    if (!videoId && !playlistId) {
+        linkError.innerText = 'Invalid YouTube link';
+        linkError.classList.remove('hidden');
+        return;
+    }
+
+    isLocalAction = true;
+    linkInput.value = '';
+
+    if (playlistId) {
+        currentPlaylist = playlistId;
+        ytPlayer.loadPlaylist({ listType: 'playlist', list: playlistId, index: 0 });
+        broadcastSync('LOAD_PLAYLIST', { playlistId: playlistId });
+        showToast('📋 Loaded new playlist');
+    } else if (videoId) {
+        ytPlayer.loadVideoById(videoId, 0);
+        broadcastSync('LOAD_VIDEO', { videoId: videoId });
+    }
+    
+    setTimeout(() => isLocalAction = false, 1500);
+}
+
+btnLoadLink.addEventListener('click', handleLinkSubmit);
+linkInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') handleLinkSubmit();
 });
 
 // ========================================

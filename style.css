@@ -74,6 +74,29 @@ body {
     background: transparent;
 }
 
+/* Range Slider Styling */
+input[type=range] {
+    -webkit-appearance: none;
+    outline: none;
+}
+input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #34d399; /* emerald-400 */
+    cursor: pointer;
+}
+input[type=range]::-moz-range-thumb {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #34d399;
+    cursor: pointer;
+    border: none;
+}
+
 /* Toast Notifications */
 .toast-notification {
     background: rgba(17, 25, 40, 0.9);
