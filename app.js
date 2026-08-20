@@ -92,6 +92,20 @@ const btnGroup = $('btn-group');
 const visitorCountEl = $('visitor-count');
 const toastContainer = $('toast-container');
 
+// Browse / Search UI
+const browseModal = $('browse-modal');
+const btnBrowse = $('btn-browse');
+const btnCloseBrowse = $('btn-close-browse');
+const searchInput = $('search-input');
+const playlistTracksEl = $('playlist-tracks');
+const playlistLoading = $('playlist-loading');
+const playlistEmpty = $('playlist-empty');
+const browseSearchSection = $('browse-search-section');
+const searchResultsEl = $('search-results');
+const searchLoading = $('search-loading');
+const searchEmpty = $('search-empty');
+const searchQuotaWarn = $('search-quota-warn');
+
 // ========================================
 // INITIALIZATION
 // ========================================
@@ -819,6 +833,237 @@ function switchSession() {
 
 btnTimerToggle.addEventListener('click', toggleTimer);
 btnTimerReset.addEventListener('click', resetTimer);
+
+// ========================================
+// YOUTUBE DATA API HELPERS
+// ========================================
+let playlistTracksCache = {};  // playlistId -> tracks[]
+let searchDebounceTimer = null;
+
+async function ytApiFetch(endpoint, params) {
+    const url = new URL(`https://www.googleapis.com/youtube/v3/${endpoint}`);
+    params.key = YT_API_KEY;
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+    
+    try {
+        const res = await fetch(url.toString());
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            const msg = err?.error?.message || `HTTP ${res.status}`;
+            if (res.status === 403) {
+                showToast('⚠️ API quota exceeded — try again tomorrow', 5000);
+            } else {
+                showToast(`❌ API Error: ${msg}`, 4000);
+            }
+            console.error('[YT API]', msg);
+            return null;
+        }
+        return await res.json();
+    } catch (e) {
+        console.error('[YT API] Fetch failed:', e);
+        showToast('❌ Network error — check your connection', 4000);
+        return null;
+    }
+}
+
+async function fetchPlaylistTracks(playlistId) {
+    // Check cache first
+    if (playlistTracksCache[playlistId]) return playlistTracksCache[playlistId];
+    
+    let tracks = [];
+    let nextPageToken = '';
+    
+    // Fetch up to 100 tracks (2 pages of 50)
+    for (let page = 0; page < 2; page++) {
+        const params = {
+            part: 'snippet',
+            playlistId: playlistId,
+            maxResults: '50'
+        };
+        if (nextPageToken) params.pageToken = nextPageToken;
+        
+        const data = await ytApiFetch('playlistItems', params);
+        if (!data || !data.items) break;
+        
+        for (const item of data.items) {
+            const s = item.snippet;
+            if (!s || !s.resourceId?.videoId) continue;
+            // Skip deleted/private videos
+            if (s.title === 'Deleted video' || s.title === 'Private video') continue;
+            tracks.push({
+                videoId: s.resourceId.videoId,
+                title: s.title,
+                thumbnail: s.thumbnails?.default?.url || s.thumbnails?.medium?.url || '',
+                channel: s.videoOwnerChannelTitle || ''
+            });
+        }
+        
+        nextPageToken = data.nextPageToken || '';
+        if (!nextPageToken) break;
+    }
+    
+    playlistTracksCache[playlistId] = tracks;
+    return tracks;
+}
+
+async function searchYouTube(query) {
+    if (!query || query.length < 2) return [];
+    
+    const data = await ytApiFetch('search', {
+        part: 'snippet',
+        q: query,
+        type: 'video',
+        maxResults: '15',
+        videoCategoryId: '10'  // Music category
+    });
+    
+    if (!data || !data.items) return [];
+    
+    return data.items.map(item => ({
+        videoId: item.id.videoId,
+        title: item.snippet.title,
+        thumbnail: item.snippet.thumbnails?.default?.url || '',
+        channel: item.snippet.channelTitle || ''
+    }));
+}
+
+// ========================================
+// BROWSE MODAL LOGIC
+// ========================================
+function openBrowseModal() {
+    browseModal.classList.remove('hidden');
+    setTimeout(() => browseModal.classList.remove('opacity-0'), 10);
+    
+    // Reset search
+    searchInput.value = '';
+    browseSearchSection.classList.add('hidden');
+    searchResultsEl.innerHTML = '';
+    
+    // Load current playlist tracks
+    loadPlaylistTracks();
+}
+
+function closeBrowseModal() {
+    browseModal.classList.add('opacity-0');
+    setTimeout(() => browseModal.classList.add('hidden'), 300);
+}
+
+async function loadPlaylistTracks() {
+    playlistTracksEl.innerHTML = '';
+    playlistEmpty.classList.add('hidden');
+    playlistLoading.classList.remove('hidden');
+    
+    const tracks = await fetchPlaylistTracks(currentPlaylist);
+    
+    playlistLoading.classList.add('hidden');
+    
+    if (!tracks || tracks.length === 0) {
+        playlistEmpty.classList.remove('hidden');
+        return;
+    }
+    
+    renderTrackList(playlistTracksEl, tracks);
+}
+
+function renderTrackList(container, tracks) {
+    container.innerHTML = '';
+    
+    tracks.forEach((track, index) => {
+        const el = document.createElement('button');
+        el.className = 'flex items-center gap-3 p-2 rounded-lg hover:bg-white/5 transition-colors w-full text-left group';
+        el.innerHTML = `
+            <img src="${track.thumbnail}" alt="" class="w-10 h-10 rounded-md object-cover bg-gray-800 flex-shrink-0" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 40%22><rect fill=%22%231f2937%22 width=%2240%22 height=%2240%22/><text x=%2220%22 y=%2224%22 text-anchor=%22middle%22 fill=%22%236b7280%22 font-size=%2214%22>♪</text></svg>'">
+            <div class="flex-1 min-w-0">
+                <p class="text-xs font-medium text-white/80 truncate group-hover:text-emerald-400 transition-colors">${escapeHtml(track.title)}</p>
+                <p class="text-[10px] text-white/30 truncate">${escapeHtml(track.channel)}</p>
+            </div>
+            <svg class="w-4 h-4 text-white/20 group-hover:text-emerald-400 flex-shrink-0 transition-colors" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+        `;
+        
+        el.addEventListener('click', () => {
+            playTrackFromBrowse(track);
+        });
+        
+        container.appendChild(el);
+    });
+}
+
+function playTrackFromBrowse(track) {
+    if (!ytPlayer) return;
+    
+    isLocalAction = true;
+    ytPlayer.loadVideoById(track.videoId, 0);
+    broadcastSync('LOAD_VIDEO', { videoId: track.videoId, title: track.title });
+    showToast(`🎵 ${track.title}`);
+    closeBrowseModal();
+    
+    setTimeout(() => isLocalAction = false, 1500);
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+// ========================================
+// SEARCH LOGIC (Debounced)
+// ========================================
+searchInput.addEventListener('input', () => {
+    const query = searchInput.value.trim();
+    
+    if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+    
+    if (query.length < 2) {
+        browseSearchSection.classList.add('hidden');
+        return;
+    }
+    
+    searchDebounceTimer = setTimeout(() => performSearch(query), 500);
+});
+
+searchInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+        const query = searchInput.value.trim();
+        if (query.length >= 2) {
+            if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+            performSearch(query);
+        }
+    }
+});
+
+async function performSearch(query) {
+    browseSearchSection.classList.remove('hidden');
+    searchResultsEl.innerHTML = '';
+    searchEmpty.classList.add('hidden');
+    searchQuotaWarn.classList.add('hidden');
+    searchLoading.classList.remove('hidden');
+    
+    const results = await searchYouTube(query);
+    
+    searchLoading.classList.add('hidden');
+    
+    if (!results || results.length === 0) {
+        searchEmpty.classList.remove('hidden');
+        return;
+    }
+    
+    renderTrackList(searchResultsEl, results);
+    searchQuotaWarn.classList.remove('hidden');
+}
+
+// ========================================
+// BROWSE EVENT LISTENERS
+// ========================================
+btnBrowse.addEventListener('click', openBrowseModal);
+btnCloseBrowse.addEventListener('click', closeBrowseModal);
+
+// Close on Escape key
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        if (!browseModal.classList.contains('hidden')) closeBrowseModal();
+    }
+});
 
 // ========================================
 // AMBIENT ANIMATIONS
