@@ -465,20 +465,23 @@ function handleSyncMessage(data) {
     
     // Calculate network latency and compensate
     const latencyMs = Date.now() - (data.sentAt || Date.now());
-    const latencySec = Math.max(0, Math.min(latencyMs / 1000, 5)); // Cap at 5s to avoid crazy jumps
-    const compensatedTime = (data.time || 0) + latencySec;
+    const latencySec = Math.max(0, Math.min(latencyMs / 1000, 5));
+    // Add 0.15s buffer to account for YouTube's own seek processing time
+    const SEEK_BUFFER = 0.15;
+    const compensatedTime = (data.time || 0) + latencySec + SEEK_BUFFER;
     
     if (data.action === 'PLAY' || data.action === 'TRACK_CHANGE' || data.action === 'SYNC_STATE') {
         try {
             const currentVideoId = ytPlayer.getVideoData().video_id;
             if (data.videoId && data.videoId !== currentVideoId) {
-                // Different video — load it at the compensated time
                 ytPlayer.loadVideoById(data.videoId, compensatedTime);
                 if (data.action !== 'SYNC_STATE') showToast(`🎵 Now Playing: ${data.title || 'Unknown'}`);
             } else {
-                // Same video — sync the time if drifted
                 const currentTime = ytPlayer.getCurrentTime() || 0;
-                if (Math.abs(currentTime - compensatedTime) > 0.8) {
+                const drift = Math.abs(currentTime - compensatedTime);
+                // Aggressive sync for initial join, normal for ongoing
+                const threshold = data.action === 'SYNC_STATE' ? 0.3 : 0.5;
+                if (drift > threshold) {
                     ytPlayer.seekTo(compensatedTime, true);
                 }
                 if (!isPlaying) ytPlayer.playVideo();
@@ -500,7 +503,7 @@ function handleSyncMessage(data) {
                 ytPlayer.loadVideoById(data.videoId, compensatedTime);
             } else {
                 const currentTime = ytPlayer.getCurrentTime() || 0;
-                if (Math.abs(currentTime - compensatedTime) > 0.8) {
+                if (Math.abs(currentTime - compensatedTime) > 0.5) {
                     ytPlayer.seekTo(compensatedTime, true);
                 }
                 if (!isPlaying) ytPlayer.playVideo();
@@ -543,11 +546,11 @@ function joinRoom(roomCode) {
         showToast(`✅ Connected to room ${currentRoom}`);
     });
     
-    // Start heartbeat broadcast every 2 seconds for tighter sync
+    // Start heartbeat broadcast every 1.5 seconds for tightest sync
     if (syncBroadcastTimer) clearInterval(syncBroadcastTimer);
     syncBroadcastTimer = setInterval(() => {
         if (isPlaying && !isLocalAction) broadcastSync('HEARTBEAT');
-    }, 2000);
+    }, 1500);
     
     closeRoomModal();
 }
