@@ -1,0 +1,17 @@
+{
+    "name": "Office Radio",
+    "short_name": "Office Radio",
+    "description": "Ad-Free Music for Your Team",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#111827",
+    "theme_color": "#34d399",
+    "icons": [
+        {
+            "src": "assets/favicon.svg",
+            "sizes": "any",
+            "type": "image/svg+xml",
+            "purpose": "any maskable"
+        }
+    ]
+}

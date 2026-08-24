@@ -1066,6 +1066,45 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ========================================
+// KEYBOARD SHORTCUTS
+// ========================================
+document.addEventListener('keydown', (e) => {
+    // Ignore if typing in an input field
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+        if (e.key === 'Escape') {
+            e.target.blur();
+        }
+        return;
+    }
+    
+    switch(e.key.toLowerCase()) {
+        case ' ':
+            e.preventDefault();
+            playBtn.click();
+            break;
+        case 'm':
+            e.preventDefault();
+            muteBtn.click();
+            break;
+        case 'arrowright':
+        case 'n':
+            e.preventDefault();
+            nextBtn.click();
+            break;
+        case 'arrowleft':
+        case 'p':
+            e.preventDefault();
+            prevBtn.click();
+            break;
+        case '/':
+            e.preventDefault();
+            openBrowseModal();
+            setTimeout(() => searchInput.focus(), 100);
+            break;
+    }
+});
+
+// ========================================
 // AMBIENT ANIMATIONS
 // ========================================
 const particlesContainer = $('particles');
