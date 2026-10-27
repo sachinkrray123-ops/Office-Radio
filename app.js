@@ -17,19 +17,15 @@ let currentPlaylist = DEFAULT_PLAYLIST;
 let progressTimer = null;
 let metadataTimer = null;
 
-// Pomodoro
-let timerInterval = null;
-let timeLeft = 25 * 60;
-let isTimerRunning = false;
-let isWorkSession = true;
-
 // Sync
 let isGroupMode = false;
 let currentRoom = null;
 let mqttClient = null;
 let isLocalAction = false;
 let syncBroadcastTimer = null;
+let lastSeekTime = 0;
 const myClientId = 'or_' + Math.random().toString(36).substring(2, 10);
+let roomMembers = new Set();
 
 // Visitor tracking
 let visitorHeartbeatTimer = null;
@@ -57,15 +53,20 @@ const timeTotalEl = $('time-total');
 const progressFill = $('progress-fill');
 const progressContainer = $('progress-container');
 
-const timerDisplay = $('timer-display');
-const timerLabel = $('timer-label');
-const btnTimerToggle = $('btn-timer-toggle');
-const btnTimerReset = $('btn-timer-reset');
-
 const volumeSlider = $('volume-slider');
-const linkInput = $('link-input');
-const btnLoadLink = $('btn-load-link');
-const linkError = $('link-error');
+
+// Direct YouTube Search
+const mainSearchInput = $('main-search-input');
+const btnMainSearch = $('btn-main-search');
+
+// Direct Links
+const songLinkInput = $('song-link-input');
+const btnLoadSong = $('btn-load-song');
+const songLinkError = $('song-link-error');
+
+const playlistLinkInput = $('playlist-link-input');
+const btnLoadPlaylist = $('btn-load-playlist');
+const playlistLinkError = $('playlist-link-error');
 
 // Room UI
 const roomModal = $('room-modal');
@@ -97,6 +98,7 @@ const browseModal = $('browse-modal');
 const btnBrowse = $('btn-browse');
 const btnCloseBrowse = $('btn-close-browse');
 const searchInput = $('search-input');
+const btnModalSearch = $('btn-modal-search');
 const playlistTracksEl = $('playlist-tracks');
 const playlistLoading = $('playlist-loading');
 const playlistEmpty = $('playlist-empty');
@@ -447,17 +449,21 @@ function publishPresence(action) {
     }));
 }
 
-// Room member tracking
-let roomMembers = new Set();
+// Leader Election: Lowest client ID among all connected members is the Host
+function isRoomHost() {
+    if (!isGroupMode || !currentRoom) return false;
+    const allMembers = [myClientId, ...roomMembers].sort();
+    return allMembers[0] === myClientId;
+}
 
 function handlePresenceMessage(data) {
     if (data.action === 'JOIN') {
         roomMembers.add(data.senderId);
         // Reply with our own presence so the new joiner knows we're here
         publishPresence('HERE');
-        // Immediately broadcast current playback state so the joiner syncs instantly
-        if (isPlaying) {
-            setTimeout(() => broadcastSync('SYNC_STATE'), 300);
+        // Only the designated Host sends initial SYNC_STATE to prevent packet storms
+        if (isRoomHost() && isPlaying) {
+            setTimeout(() => broadcastSync('SYNC_STATE'), 400);
         }
         showToast('🟢 Someone joined the room');
     } else if (data.action === 'HERE') {
@@ -476,7 +482,7 @@ function updateListenerCount() {
 }
 
 // ========================================
-// SYNC LOGIC (Latency-Compensated)
+// SYNC LOGIC (Latency-Compensated & Zero-Lag)
 // ========================================
 function broadcastSync(action, extraData = {}) {
     if (!isGroupMode || !mqttClient || !ytPlayer) return;
@@ -511,12 +517,10 @@ function broadcastSync(action, extraData = {}) {
 function handleSyncMessage(data) {
     if (!ytPlayer || isLocalAction) return;
     
-    // Calculate network latency and compensate
-    const latencyMs = Date.now() - (data.sentAt || Date.now());
-    const latencySec = Math.max(0, Math.min(latencyMs / 1000, 5));
-    // Add 0.15s buffer to account for YouTube's own seek processing time
-    const SEEK_BUFFER = 0.15;
-    const compensatedTime = (data.time || 0) + latencySec + SEEK_BUFFER;
+    // Calculate network latency and compensate (clamped to prevent skew)
+    const rawLatency = Date.now() - (data.sentAt || Date.now());
+    const latencySec = Math.max(0, Math.min(rawLatency / 1000, 2.0));
+    const compensatedTime = (data.time || 0) + latencySec;
     
     if (data.action === 'PLAY' || data.action === 'TRACK_CHANGE' || data.action === 'SYNC_STATE') {
         try {
@@ -527,9 +531,10 @@ function handleSyncMessage(data) {
             } else {
                 const currentTime = ytPlayer.getCurrentTime() || 0;
                 const drift = Math.abs(currentTime - compensatedTime);
-                // Aggressive sync for initial join, normal for ongoing
-                const threshold = data.action === 'SYNC_STATE' ? 0.3 : 0.5;
+                // On user actions, seek if drift > 1.5s
+                const threshold = data.action === 'SYNC_STATE' ? 1.0 : 1.5;
                 if (drift > threshold) {
+                    lastSeekTime = Date.now();
                     ytPlayer.seekTo(compensatedTime, true);
                 }
                 if (!isPlaying) ytPlayer.playVideo();
@@ -542,16 +547,24 @@ function handleSyncMessage(data) {
         ytPlayer.pauseVideo();
     }
     else if (data.action === 'SEEK') {
+        lastSeekTime = Date.now();
         ytPlayer.seekTo(compensatedTime, true);
     }
     else if (data.action === 'HEARTBEAT') {
+        // If I am the host, ignore heartbeats from other peers
+        if (isRoomHost()) return;
+
         try {
             const currentVideoId = ytPlayer.getVideoData().video_id;
             if (data.videoId && data.videoId !== currentVideoId) {
                 ytPlayer.loadVideoById(data.videoId, compensatedTime);
             } else {
                 const currentTime = ytPlayer.getCurrentTime() || 0;
-                if (Math.abs(currentTime - compensatedTime) > 0.5) {
+                const drift = Math.abs(currentTime - compensatedTime);
+                const now = Date.now();
+                // 2.5s drift tolerance + 4s seek cooldown -> 100% stutter-free
+                if (drift > 2.5 && (now - lastSeekTime > 4000)) {
+                    lastSeekTime = now;
                     ytPlayer.seekTo(compensatedTime, true);
                 }
                 if (!isPlaying) ytPlayer.playVideo();
@@ -563,6 +576,8 @@ function handleSyncMessage(data) {
         showToast(`🎵 Now Playing: ${data.title || 'Unknown'}`);
     }
     else if (data.action === 'LOAD_PLAYLIST') {
+        currentPlaylist = data.playlistId;
+        delete playlistTracksCache[data.playlistId];
         ytPlayer.loadPlaylist({ listType: 'playlist', list: data.playlistId, index: 0 });
         showToast(`📋 Playlist changed`);
     }
@@ -594,11 +609,13 @@ function joinRoom(roomCode) {
         showToast(`✅ Connected to room ${currentRoom}`);
     });
     
-    // Start heartbeat broadcast every 1.5 seconds for tightest sync
+    // Start heartbeat broadcast every 3.5 seconds — ONLY the host sends it
     if (syncBroadcastTimer) clearInterval(syncBroadcastTimer);
     syncBroadcastTimer = setInterval(() => {
-        if (isPlaying && !isLocalAction) broadcastSync('HEARTBEAT');
-    }, 1500);
+        if (isPlaying && !isLocalAction && isRoomHost()) {
+            broadcastSync('HEARTBEAT');
+        }
+    }, 3500);
     
     closeRoomModal();
 }
@@ -722,117 +739,111 @@ roomModal.addEventListener('click', (e) => {
 });
 
 // ========================================
-// CUSTOM LINK HANDLING
+// DIRECT SEARCH HANDLING
 // ========================================
-function handleLinkSubmit() {
-    const url = linkInput.value.trim();
+function triggerMainSearch() {
+    const q = mainSearchInput.value.trim();
+    if (!q) {
+        mainSearchInput.focus();
+        return;
+    }
+    openBrowseModal(q);
+}
+
+btnMainSearch.addEventListener('click', triggerMainSearch);
+mainSearchInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') triggerMainSearch();
+});
+
+btnModalSearch.addEventListener('click', () => {
+    const q = searchInput.value.trim();
+    if (q) performSearch(q);
+});
+
+// ========================================
+// DIRECT SONG & PLAYLIST LINK HANDLING
+// ========================================
+function handleSongSubmit() {
+    const url = songLinkInput.value.trim();
     if (!url) return;
     
-    linkError.classList.add('hidden');
+    songLinkError.classList.add('hidden');
     let videoId = null;
-    let playlistId = null;
 
     try {
         const urlObj = new URL(url);
         if (urlObj.hostname.includes('youtube.com')) {
-            playlistId = urlObj.searchParams.get('list');
             videoId = urlObj.searchParams.get('v');
         } else if (urlObj.hostname === 'youtu.be') {
-            videoId = urlObj.pathname.substring(1);
-            playlistId = urlObj.searchParams.get('list');
+            videoId = urlObj.pathname.substring(1).split(/[?#]/)[0];
         }
     } catch (e) {
-        // Fallback regex
-        const listMatch = url.match(/[?&]list=([^#\&\?]+)/);
-        if (listMatch) playlistId = listMatch[1];
-        
-        const videoMatch = url.match(/(?:v=|youtu\.be\/)([^#\&\?]+)/);
+        const videoMatch = url.match(/(?:v=|youtu\.be\/|embed\/)([^#\&\?]{11})/);
         if (videoMatch) videoId = videoMatch[1];
     }
 
-    if (!videoId && !playlistId) {
-        linkError.innerText = 'Invalid YouTube link';
-        linkError.classList.remove('hidden');
+    if (!videoId && /^[a-zA-Z0-9_-]{11}$/.test(url)) {
+        videoId = url;
+    }
+
+    if (!videoId) {
+        songLinkError.innerText = 'Please enter a valid YouTube video link';
+        songLinkError.classList.remove('hidden');
         return;
     }
 
     isLocalAction = true;
-    linkInput.value = '';
-
-    if (playlistId) {
-        currentPlaylist = playlistId;
-        ytPlayer.loadPlaylist({ listType: 'playlist', list: playlistId, index: 0 });
-        broadcastSync('LOAD_PLAYLIST', { playlistId: playlistId });
-        showToast('📋 Loaded new playlist');
-    } else if (videoId) {
-        ytPlayer.loadVideoById(videoId, 0);
-        broadcastSync('LOAD_VIDEO', { videoId: videoId });
-    }
-    
+    songLinkInput.value = '';
+    ytPlayer.loadVideoById(videoId, 0);
+    broadcastSync('LOAD_VIDEO', { videoId: videoId });
+    showToast('🎵 Playing song');
     setTimeout(() => isLocalAction = false, 1500);
 }
 
-btnLoadLink.addEventListener('click', handleLinkSubmit);
-linkInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') handleLinkSubmit();
+btnLoadSong.addEventListener('click', handleSongSubmit);
+songLinkInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') handleSongSubmit();
 });
 
-// ========================================
-// POMODORO TIMER
-// ========================================
-function updateTimerDisplay() {
-    const m = Math.floor(timeLeft / 60);
-    const s = timeLeft % 60;
-    timerDisplay.innerText = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-}
+function handlePlaylistSubmit() {
+    const url = playlistLinkInput.value.trim();
+    if (!url) return;
+    
+    playlistLinkError.classList.add('hidden');
+    let playlistId = null;
 
-function toggleTimer() {
-    if (isTimerRunning) {
-        clearInterval(timerInterval);
-        isTimerRunning = false;
-        btnTimerToggle.innerText = isWorkSession ? 'Resume Focus' : 'Resume Break';
-    } else {
-        isTimerRunning = true;
-        btnTimerToggle.innerText = 'Pause Timer';
-        if (isWorkSession && !isPlaying && ytPlayer) ytPlayer.playVideo();
-
-        timerInterval = setInterval(() => {
-            timeLeft--;
-            if (timeLeft <= 0) switchSession();
-            updateTimerDisplay();
-        }, 1000);
+    try {
+        const urlObj = new URL(url);
+        playlistId = urlObj.searchParams.get('list');
+    } catch (e) {
+        const listMatch = url.match(/[?&]list=([^#\&\?]+)/);
+        if (listMatch) playlistId = listMatch[1];
     }
-}
 
-function resetTimer() {
-    clearInterval(timerInterval);
-    isTimerRunning = false;
-    isWorkSession = true;
-    timeLeft = 25 * 60;
-    updateTimerDisplay();
-    timerLabel.innerText = 'Deep Work';
-    btnTimerToggle.innerText = 'Start Focus';
-}
-
-function switchSession() {
-    clearInterval(timerInterval);
-    isTimerRunning = false;
-    if (isWorkSession) {
-        isWorkSession = false;
-        timeLeft = 5 * 60;
-        timerLabel.innerText = 'Take a Break';
-        btnTimerToggle.innerText = 'Start Break';
-    } else {
-        isWorkSession = true;
-        timeLeft = 25 * 60;
-        timerLabel.innerText = 'Deep Work';
-        btnTimerToggle.innerText = 'Start Focus';
+    if (!playlistId && /^[a-zA-Z0-9_-]{10,}$/.test(url)) {
+        playlistId = url;
     }
-    updateTimerDisplay();
+
+    if (!playlistId) {
+        playlistLinkError.innerText = 'Please enter a valid YouTube playlist link';
+        playlistLinkError.classList.remove('hidden');
+        return;
+    }
+
+    isLocalAction = true;
+    playlistLinkInput.value = '';
+    currentPlaylist = playlistId;
+    delete playlistTracksCache[playlistId];
+    ytPlayer.loadPlaylist({ listType: 'playlist', list: playlistId, index: 0 });
+    broadcastSync('LOAD_PLAYLIST', { playlistId: playlistId });
+    showToast('📋 Loaded new playlist');
+    setTimeout(() => isLocalAction = false, 1500);
 }
 
-btnTimerToggle.addEventListener('click', toggleTimer);
-btnTimerReset.addEventListener('click', resetTimer);
+btnLoadPlaylist.addEventListener('click', handlePlaylistSubmit);
+playlistLinkInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') handlePlaylistSubmit();
+});
 
 // ========================================
 // YOUTUBE DATA API HELPERS
@@ -930,17 +941,19 @@ async function searchYouTube(query) {
 // ========================================
 // BROWSE MODAL LOGIC
 // ========================================
-function openBrowseModal() {
+function openBrowseModal(initialQuery = '') {
     browseModal.classList.remove('hidden');
     setTimeout(() => browseModal.classList.remove('opacity-0'), 10);
     
-    // Reset search
-    searchInput.value = '';
-    browseSearchSection.classList.add('hidden');
-    searchResultsEl.innerHTML = '';
-    
-    // Load current playlist tracks
-    loadPlaylistTracks();
+    if (initialQuery) {
+        searchInput.value = initialQuery;
+        performSearch(initialQuery);
+    } else {
+        searchInput.value = '';
+        browseSearchSection.classList.add('hidden');
+        searchResultsEl.innerHTML = '';
+        loadPlaylistTracks();
+    }
 }
 
 function closeBrowseModal() {
@@ -1124,5 +1137,4 @@ if (particlesContainer) {
 // ========================================
 // INIT
 // ========================================
-updateTimerDisplay();
 init();
