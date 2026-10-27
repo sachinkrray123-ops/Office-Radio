@@ -14,6 +14,8 @@ const DEFAULT_PLAYLIST = 'PLUSeOh5veVTo';
 let ytPlayer = null;
 let isPlaying = false;
 let currentPlaylist = DEFAULT_PLAYLIST;
+let currentMixTitle = '';
+let lastVideoId = '';
 let progressTimer = null;
 let metadataTimer = null;
 
@@ -43,6 +45,7 @@ const playBtn = $('btn-play');
 const prevBtn = $('btn-prev');
 const nextBtn = $('btn-next');
 const playIcon = $('icon-play');
+const btnStartMix = $('btn-start-mix');
 const muteBtn = $('btn-mute');
 const iconMute = $('icon-mute');
 const trackNameEl = $('track-name');
@@ -158,6 +161,17 @@ function onPlayerStateChange(event) {
         updatePlayIconUI(true);
         updateTrackData();
         startProgressMonitor();
+        
+        // Broadcast track transitions if in room and we are the host
+        try {
+            const currentVid = ytPlayer.getVideoData().video_id;
+            if (currentVid && currentVid !== lastVideoId) {
+                lastVideoId = currentVid;
+                if (isRoomHost() && !isLocalAction) {
+                    broadcastSync('TRACK_CHANGE');
+                }
+            }
+        } catch (e) { }
     } else if (event.data === YT.PlayerState.PAUSED) {
         isPlaying = false;
         updatePlayIconUI(false);
@@ -265,6 +279,55 @@ muteBtn.addEventListener('click', () => {
 });
 
 // ========================================
+// YOUTUBE MIX ENGINE
+// ========================================
+function startSongMix(videoId, title = '') {
+    if (!ytPlayer || !videoId) {
+        showToast('⚠️ Play a song first to start a Mix');
+        return;
+    }
+    
+    isLocalAction = true;
+    const mixPlaylistId = 'RD' + videoId;
+    currentPlaylist = mixPlaylistId;
+    currentMixTitle = title || '';
+    
+    delete playlistTracksCache[mixPlaylistId];
+    
+    // In YouTube Iframe API, loading listType: 'playlist' with 'RD<videoId>' creates the Mix!
+    ytPlayer.loadPlaylist({
+        listType: 'playlist',
+        list: mixPlaylistId,
+        index: 0
+    });
+    
+    playlistNameEl.innerText = currentMixTitle ? `Mix · ${currentMixTitle}` : 'YouTube Mix';
+    
+    broadcastSync('LOAD_PLAYLIST', {
+        playlistId: mixPlaylistId,
+        title: currentMixTitle ? `Mix: ${currentMixTitle}` : 'YouTube Mix'
+    });
+    
+    showToast(`🔀 Started YouTube Mix${title ? ': ' + title : ''}`);
+    setTimeout(() => isLocalAction = false, 1500);
+}
+
+btnStartMix.addEventListener('click', () => {
+    if (!ytPlayer || typeof ytPlayer.getVideoData !== 'function') {
+        showToast('⚠️ Play a song first to start a Mix');
+        return;
+    }
+    const data = ytPlayer.getVideoData();
+    const vid = data ? data.video_id : '';
+    const title = data ? data.title : '';
+    if (!vid) {
+        showToast('⚠️ Play a song first to start a Mix');
+        return;
+    }
+    startSongMix(vid, title);
+});
+
+// ========================================
 // UI UPDATES
 // ========================================
 function updatePlayIconUI(playing) {
@@ -284,6 +347,9 @@ function updateTrackData() {
         if (data && data.title) trackNameEl.innerText = data.title;
         if (data && data.video_id) {
             coverArtEl.style.backgroundImage = `url('https://img.youtube.com/vi/${data.video_id}/hqdefault.jpg')`;
+        }
+        if (currentPlaylist && currentPlaylist.startsWith('RD')) {
+            playlistNameEl.innerText = currentMixTitle ? `Mix · ${currentMixTitle}` : 'YouTube Mix';
         }
     } catch (e) { }
 }
@@ -572,14 +638,24 @@ function handleSyncMessage(data) {
         } catch (e) { }
     }
     else if (data.action === 'LOAD_VIDEO') {
+        currentMixTitle = '';
+        playlistNameEl.innerText = 'Office Playlist';
         ytPlayer.loadVideoById(data.videoId, 0);
         showToast(`🎵 Now Playing: ${data.title || 'Unknown'}`);
     }
     else if (data.action === 'LOAD_PLAYLIST') {
         currentPlaylist = data.playlistId;
         delete playlistTracksCache[data.playlistId];
+        if (data.playlistId && data.playlistId.startsWith('RD')) {
+            currentMixTitle = data.title || 'YouTube Mix';
+            playlistNameEl.innerText = currentMixTitle;
+            showToast(`🔀 ${currentMixTitle}`);
+        } else {
+            currentMixTitle = '';
+            playlistNameEl.innerText = data.title || 'Custom Playlist';
+            showToast(`📋 Playlist changed`);
+        }
         ytPlayer.loadPlaylist({ listType: 'playlist', list: data.playlistId, index: 0 });
-        showToast(`📋 Playlist changed`);
     }
 }
 
@@ -769,17 +845,28 @@ function handleSongSubmit() {
     
     songLinkError.classList.add('hidden');
     let videoId = null;
+    let playlistId = null;
 
     try {
         const urlObj = new URL(url);
+        playlistId = urlObj.searchParams.get('list');
         if (urlObj.hostname.includes('youtube.com')) {
             videoId = urlObj.searchParams.get('v');
         } else if (urlObj.hostname === 'youtu.be') {
             videoId = urlObj.pathname.substring(1).split(/[?#]/)[0];
         }
     } catch (e) {
+        const listMatch = url.match(/[?&]list=([^#\&\?]+)/);
+        if (listMatch) playlistId = listMatch[1];
         const videoMatch = url.match(/(?:v=|youtu\.be\/|embed\/)([^#\&\?]{11})/);
         if (videoMatch) videoId = videoMatch[1];
+    }
+
+    // Check if it's a YouTube Mix URL (e.g. list=RD...)
+    if (playlistId && playlistId.startsWith('RD')) {
+        songLinkInput.value = '';
+        startSongMix(videoId || playlistId.substring(2), 'Pasted Mix');
+        return;
     }
 
     if (!videoId && /^[a-zA-Z0-9_-]{11}$/.test(url)) {
@@ -794,6 +881,8 @@ function handleSongSubmit() {
 
     isLocalAction = true;
     songLinkInput.value = '';
+    currentMixTitle = '';
+    playlistNameEl.innerText = 'Office Playlist';
     ytPlayer.loadVideoById(videoId, 0);
     broadcastSync('LOAD_VIDEO', { videoId: videoId });
     showToast('🎵 Playing song');
@@ -811,13 +900,17 @@ function handlePlaylistSubmit() {
     
     playlistLinkError.classList.add('hidden');
     let playlistId = null;
+    let videoId = null;
 
     try {
         const urlObj = new URL(url);
         playlistId = urlObj.searchParams.get('list');
+        videoId = urlObj.searchParams.get('v');
     } catch (e) {
         const listMatch = url.match(/[?&]list=([^#\&\?]+)/);
         if (listMatch) playlistId = listMatch[1];
+        const videoMatch = url.match(/(?:v=|youtu\.be\/|embed\/)([^#\&\?]{11})/);
+        if (videoMatch) videoId = videoMatch[1];
     }
 
     if (!playlistId && /^[a-zA-Z0-9_-]{10,}$/.test(url)) {
@@ -825,16 +918,24 @@ function handlePlaylistSubmit() {
     }
 
     if (!playlistId) {
-        playlistLinkError.innerText = 'Please enter a valid YouTube playlist link';
+        playlistLinkError.innerText = 'Please enter a valid YouTube playlist or Mix link';
         playlistLinkError.classList.remove('hidden');
         return;
     }
 
-    isLocalAction = true;
     playlistLinkInput.value = '';
+
+    if (playlistId.startsWith('RD')) {
+        startSongMix(videoId || playlistId.substring(2), 'Pasted Mix');
+        return;
+    }
+
+    isLocalAction = true;
+    currentMixTitle = '';
     currentPlaylist = playlistId;
     delete playlistTracksCache[playlistId];
     ytPlayer.loadPlaylist({ listType: 'playlist', list: playlistId, index: 0 });
+    playlistNameEl.innerText = 'Custom Playlist';
     broadcastSync('LOAD_PLAYLIST', { playlistId: playlistId });
     showToast('📋 Loaded new playlist');
     setTimeout(() => isLocalAction = false, 1500);
@@ -966,11 +1067,20 @@ async function loadPlaylistTracks() {
     playlistEmpty.classList.add('hidden');
     playlistLoading.classList.remove('hidden');
     
+    // Dynamic YouTube Mix cannot be queried via standard playlistItems API
+    if (currentPlaylist && currentPlaylist.startsWith('RD')) {
+        playlistLoading.classList.add('hidden');
+        playlistEmpty.innerText = 'YouTube Mix is currently active (auto-playing endless similar songs)';
+        playlistEmpty.classList.remove('hidden');
+        return;
+    }
+    
     const tracks = await fetchPlaylistTracks(currentPlaylist);
     
     playlistLoading.classList.add('hidden');
     
     if (!tracks || tracks.length === 0) {
+        playlistEmpty.innerText = 'No tracks found in playlist';
         playlistEmpty.classList.remove('hidden');
         return;
     }
@@ -982,22 +1092,42 @@ function renderTrackList(container, tracks) {
     container.innerHTML = '';
     
     tracks.forEach((track, index) => {
-        const el = document.createElement('button');
-        el.className = 'flex items-center gap-3 p-2 rounded-lg hover:bg-white/5 transition-colors w-full text-left group';
-        el.innerHTML = `
-            <img src="${track.thumbnail}" alt="" class="w-10 h-10 rounded-md object-cover bg-gray-800 flex-shrink-0" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 40%22><rect fill=%22%231f2937%22 width=%2240%22 height=%2240%22/><text x=%2220%22 y=%2224%22 text-anchor=%22middle%22 fill=%22%236b7280%22 font-size=%2214%22>♪</text></svg>'">
-            <div class="flex-1 min-w-0">
+        const row = document.createElement('div');
+        row.className = 'flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 transition-colors w-full group';
+        row.innerHTML = `
+            <img src="${track.thumbnail}" alt="" class="w-10 h-10 rounded-md object-cover bg-gray-800 flex-shrink-0 cursor-pointer" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 40%22><rect fill=%22%231f2937%22 width=%2240%22 height=%2240%22/><text x=%2220%22 y=%2224%22 text-anchor=%22middle%22 fill=%22%236b7280%22 font-size=%2214%22>♪</text></svg>'">
+            <div class="flex-1 min-w-0 cursor-pointer">
                 <p class="text-xs font-medium text-white/80 truncate group-hover:text-emerald-400 transition-colors">${escapeHtml(track.title)}</p>
                 <p class="text-[10px] text-white/30 truncate">${escapeHtml(track.channel)}</p>
             </div>
-            <svg class="w-4 h-4 text-white/20 group-hover:text-emerald-400 flex-shrink-0 transition-colors" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+            <div class="flex items-center gap-1.5 flex-shrink-0">
+                <button class="btn-mix-item px-2.5 py-1 rounded-md bg-white/5 hover:bg-emerald-500/20 text-white/60 hover:text-emerald-300 border border-white/10 hover:border-emerald-500/30 text-[10px] font-semibold flex items-center gap-1 transition-all active:scale-95 shadow-sm" title="Start YouTube Mix from this song">
+                    <svg class="w-3 h-3 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path></svg>
+                    <span>Mix</span>
+                </button>
+                <button class="btn-play-item p-1.5 rounded-md hover:bg-white/10 text-white/40 hover:text-emerald-400 transition-colors" title="Play song">
+                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                </button>
+            </div>
         `;
         
-        el.addEventListener('click', () => {
-            playTrackFromBrowse(track);
+        const playBtn = row.querySelector('.btn-play-item');
+        const mixBtn = row.querySelector('.btn-mix-item');
+        const img = row.querySelector('img');
+        const info = row.querySelector('.flex-1');
+        
+        const playSong = () => playTrackFromBrowse(track);
+        playBtn.addEventListener('click', playSong);
+        img.addEventListener('click', playSong);
+        info.addEventListener('click', playSong);
+        
+        mixBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            startSongMix(track.videoId, track.title);
+            closeBrowseModal();
         });
         
-        container.appendChild(el);
+        container.appendChild(row);
     });
 }
 
@@ -1109,10 +1239,13 @@ document.addEventListener('keydown', (e) => {
             e.preventDefault();
             prevBtn.click();
             break;
+        case 'x':
+            e.preventDefault();
+            btnStartMix.click();
+            break;
         case '/':
             e.preventDefault();
-            openBrowseModal();
-            setTimeout(() => searchInput.focus(), 100);
+            mainSearchInput.focus();
             break;
     }
 });
